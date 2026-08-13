@@ -45,6 +45,19 @@ async def get_db() -> AsyncSession:
             await session.close()
 
 
+async def get_db_session() -> AsyncSession:
+    """Context manager for getting async database session (for services)."""
+    async with AsyncSessionLocal() as session:
+        try:
+            yield session
+            await session.commit()
+        except Exception:
+            await session.rollback()
+            raise
+        finally:
+            await session.close()
+
+
 async def init_db() -> None:
     """Initialize database tables."""
     async with engine.begin() as conn:
