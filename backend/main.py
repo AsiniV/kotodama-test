@@ -83,13 +83,13 @@ def create_app() -> FastAPI:
             "docs": "/docs",
         }
     
-    # Register API routers (Phase 1 will implement these)
-    # from backend.api import projects, generation, lore, auth, assets
-    # app.include_router(projects.router, prefix="/api/v1/projects", tags=["projects"])
-    # app.include_router(generation.router, prefix="/api/v1/generation", tags=["generation"])
-    # app.include_router(lore.router, prefix="/api/v1/lore", tags=["lore"])
-    # app.include_router(auth.router, prefix="/api/v1/auth", tags=["auth"])
-    # app.include_router(assets.router, prefix="/api/v1/assets", tags=["assets"])
+    # Register API routers (Phase 3 - UI/UX)
+    from backend.api import generation, lore
+    
+    app.include_router(generation.router, prefix="/api/v1/generation", tags=["generation"])
+    app.include_router(lore.router, prefix="/api/v1/lore", tags=["lore"])
+    
+    logger.info("API routers registered")
     
     logger.info("Application created successfully")
     return app

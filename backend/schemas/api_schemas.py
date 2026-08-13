@@ -355,6 +355,28 @@ class LevelLayout(LevelLayoutCreate):
 
 # ============== API Response Schemas ==============
 
+class GenerationResponse(BaseModel):
+    """Response from generation start endpoint."""
+    
+    success: bool
+    project_id: str
+    message: str
+    estimated_time_seconds: int
+    estimated_credits: int
+
+
+class ProjectStatusResponse(BaseModel):
+    """Current project status."""
+    
+    project_id: str
+    status: str  # pending, running, completed, failed
+    progress: int  # 0-100
+    current_agent: Optional[str] = None
+    logs: list[str] = []
+    attempt_number: int = 1
+    result: Optional[dict] = None
+
+
 class APIResponse(BaseModel):
     """Generic API response wrapper."""
 

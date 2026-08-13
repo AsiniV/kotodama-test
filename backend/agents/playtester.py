@@ -23,8 +23,12 @@ class AIPlaytesterAgent(BaseAgent):
     """Agent that runs automated playtests in Godot headless."""
 
     def __init__(self, godot_headless_path: str = "godot-headless"):
-        super().__init__(name="AI Playtester", temperature=0.0)
+        super().__init__(model_name="qwen2.5:32b", temperature=0.0)
         self.godot_headless_path = godot_headless_path
+
+    def _get_system_prompt(self) -> str:
+        """Return system prompt for playtester (not used, but required by base class)."""
+        return "You are an AI Playtester. This is a placeholder prompt as the playtester does not use LLM."
 
     async def execute(self, config: PlaytestConfig) -> PlaytestReport:
         """Run playtest and return report."""
