@@ -27,12 +27,14 @@ from backend.agents.qa import QAAgent
 from backend.agents.playtester import AIPlaytesterAgent
 from backend.schemas.agent_schemas import (
     GameDesignDocument, ArchitecturePlan, GeneratedFile,
-    QAReport, PlaytestReport, PlaytestConfig, QuestGraph, DialogueTree
+    QAReport, PlaytestReport, PlaytestConfig, QuestGraph, DialogueTree,
+    LocalizationOutput
 )
 from backend.services.workspace_manager import get_workspace_manager
 from backend.services.incremental_analyzer import get_incremental_analyzer
 from backend.services.lore_rag_service import get_lore_rag_service
 from backend.services.art_pipeline import get_art_pipeline_service
+from backend.agents.localization import LocalizationManagerAgent
 
 
 class GenerationState(TypedDict):
@@ -41,9 +43,12 @@ class GenerationState(TypedDict):
     wizard_input: dict
     gdd: GameDesignDocument | None
     architecture_plan: ArchitecturePlan | None
+    quest_graphs: list[QuestGraph]
+    dialogue_trees: list[DialogueTree]
     generated_files: list[GeneratedFile]
     qa_report: QAReport | None
     playtest_report: PlaytestReport | None
+    localization_output: LocalizationOutput | None
     attempt_number: int
     success: bool
     error_message: str | None
@@ -63,6 +68,7 @@ class OrchestratorService:
         self.coder = CoderAgent()
         self.qa = QAAgent()
         self.playtester = AIPlaytesterAgent()
+        self.localization_manager = LocalizationManagerAgent()
         self.workspace_manager = get_workspace_manager()
         self.analyzer = get_incremental_analyzer()
         self.lore_rag = get_lore_rag_service()
@@ -82,6 +88,7 @@ class OrchestratorService:
         builder.add_node("art_director", self._run_art_director)
         builder.add_node("coder", self._run_coder)
         builder.add_node("qa", self._run_qa)
+        builder.add_node("localization", self._run_localization)
         builder.add_node("playtest", self._run_playtest)
         builder.add_node("commit", self._run_commit)
         builder.add_node("rollback", self._run_rollback)
@@ -94,11 +101,12 @@ class OrchestratorService:
         builder.add_edge("dialogue_writer", "art_director")
         builder.add_edge("art_director", "coder")
         builder.add_edge("coder", "qa")
+        builder.add_edge("qa", "localization")
         
-        # Conditional routing after QA
+        # Conditional routing after localization
         builder.add_conditional_edges(
-            "qa",
-            self._after_qa_router,
+            "localization",
+            self._after_localization_router,
             {
                 "retry": "coder",
                 "continue": "playtest",
@@ -121,12 +129,20 @@ class OrchestratorService:
         
         return builder.compile(checkpointer=MemorySaver())
 
-    def _after_qa_router(self, state: GenerationState) -> Literal["retry", "continue", "rollback"]:
-        """Route based on QA results."""
-        if state["qa_report"] is None:
+    def _after_localization_router(self, state: GenerationState) -> Literal["retry", "continue", "rollback"]:
+        """Route based on localization validation results."""
+        if state["localization_output"] is None:
             return "rollback"
         
-        if not state["qa_report"].passed:
+        # Check if there are missing keys (validation failure)
+        if len(state["localization_output"].missing_keys) > 0:
+            if state["attempt_number"] < 2:
+                return "retry"
+            else:
+                return "rollback"
+        
+        # If QA failed, also retry
+        if state["qa_report"] and not state["qa_report"].passed:
             if state["attempt_number"] < 2:
                 return "retry"
             else:
@@ -168,9 +184,12 @@ class OrchestratorService:
             "wizard_input": wizard_input,
             "gdd": None,
             "architecture_plan": None,
+            "quest_graphs": [],
+            "dialogue_trees": [],
             "generated_files": [],
             "qa_report": None,
             "playtest_report": None,
+            "localization_output": None,
             "attempt_number": 0,
             "success": False,
             "error_message": None,
@@ -305,6 +324,38 @@ class OrchestratorService:
             return {"qa_report": report, "messages": [f"✓ QA: {'PASSED' if report.passed else 'FAILED'} ({report.errors_found} errors)"]}
         except Exception as e:
             return {"error_message": f"QA failed: {str(e)}"}
+
+    async def _run_localization(self, state: GenerationState) -> dict:
+        """Run Localization Manager agent."""
+        try:
+            # Extract localization strings from dialogue trees and generated files
+            loc_output = await self.localization_manager.execute(
+                dialogue_trees=state.get("dialogue_trees", []),
+                generated_files=state.get("generated_files", [])
+            )
+            
+            # Write localization files to workspace
+            if state["workspace_path"] and loc_output.localization_files:
+                from pathlib import Path
+                loc_dir = Path(state["workspace_path"]) / "assets" / "localization"
+                loc_dir.mkdir(parents=True, exist_ok=True)
+                
+                for loc_file in loc_output.localization_files:
+                    file_path = loc_dir / f"{loc_file.locale}.json"
+                    import json
+                    with open(file_path, 'w', encoding='utf-8') as f:
+                        json.dump({
+                            "locale": loc_file.locale,
+                            "strings": loc_file.strings
+                        }, f, indent=2, ensure_ascii=False)
+            
+            has_missing = len(loc_output.missing_keys) > 0
+            return {
+                "localization_output": loc_output,
+                "messages": [f"✓ Localization: {len(loc_output.entries)} entries, {len(loc_output.localization_files)} files, {'⚠ ' + str(len(loc_output.missing_keys)) + ' missing keys' if has_missing else 'all keys valid'}"]
+            }
+        except Exception as e:
+            return {"error_message": f"Localization failed: {str(e)}"}
 
     async def _run_playtest(self, state: GenerationState) -> dict:
         """Run AI Playtester agent."""
