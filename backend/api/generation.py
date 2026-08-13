@@ -8,6 +8,7 @@ import uuid
 
 from backend.services.orchestration import get_orchestrator
 from backend.services.workspace_manager import get_workspace_manager
+from backend.services.billing_service import get_billing_service
 from backend.schemas.api_schemas import (
     GenerationResponse, ProjectStatusResponse,
 )
@@ -56,13 +57,26 @@ async def start_generation(
             "setting": request.setting,
             "scale": request.scale,
             "controls": request.controls,
-            "saving_enabled": request.saving_enabled,
+            "has_saving": request.saving_enabled,
             "monetization": request.monetization,
             "quest_complexity": request.quest_complexity,
             "dialogue_depth": request.dialogue_depth,
             "lore_collection_id": request.lore_id,
             "description": request.description,
+            "project_name": project_id,
         }
+        
+        # Calculate credit cost BEFORE starting generation
+        billing_service = get_billing_service()
+        estimated_credits = billing_service.calculate_generation_cost(wizard_input)
+        
+        # Check if user has sufficient credits
+        has_credits = await billing_service.check_credits_sufficient(user_id, estimated_credits)
+        if not has_credits:
+            raise HTTPException(
+                status_code=402,
+                detail=f"Insufficient credits. Required: {estimated_credits}, Your balance: Please check your subscription."
+            )
         
         orchestrator = get_orchestrator()
         
@@ -74,8 +88,23 @@ async def start_generation(
                     user_id=user_id,
                     project_id=project_id
                 )
-                # Update project status in database (TODO: implement)
-                print(f"Generation completed for {project_id}: success={result.get('success', False)}")
+                
+                # Handle credit charging based on Two-Attempt Rule
+                attempt_number = result.get("attempt_number", 1)
+                success = result.get("success", False)
+                
+                # Charge credits on success OR second attempt failure
+                should_charge = success or (attempt_number >= 2)
+                
+                if should_charge:
+                    await billing_service.deduct_credits(
+                        user_id=user_id,
+                        amount=estimated_credits,
+                        project_id=project_id,
+                        attempt_number=attempt_number,
+                    )
+                
+                print(f"Generation completed for {project_id}: success={success}, attempt={attempt_number}, credits_charged={should_charge}")
             except Exception as e:
                 print(f"Generation failed for {project_id}: {e}")
         
@@ -86,9 +115,11 @@ async def start_generation(
             project_id=project_id,
             message="Generation started successfully",
             estimated_time_seconds=180,  # 3 minutes
-            estimated_credits=10
+            estimated_credits=estimated_credits
         )
         
+    except HTTPException:
+        raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Failed to start generation: {str(e)}")
 
