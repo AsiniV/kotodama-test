@@ -5,6 +5,7 @@ Level Generator Agent - Procedural level generation using BSP, Cellular Automata
 import logging
 from backend.agents.base import BaseAgent
 from backend.schemas.agent_schemas import ArchitecturePlan, LevelLayout
+from backend.validators import create_level_validator, ValidationResult
 
 logger = logging.getLogger("kotodama.agents.level_generator")
 
@@ -14,13 +15,14 @@ class LevelGeneratorAgent(BaseAgent):
     Level Generator Agent responsible for procedural level generation.
     
     Input: ArchitecturePlan with level_parameters
-    Output: LevelLayout with rooms, corridors, spawn points
+    Output: LevelLayout with rooms, corridors, spawn points (validated)
     
     Algorithms: BSP, Cellular Automata, Wave Function Collapse, Random Walk
     """
     
     def __init__(self, model_name: str = "qwen2.5-coder:32b", temperature: float = 0.15):
         super().__init__(model_name=model_name, temperature=temperature)
+        self.validator = None
     
     def _get_system_prompt(self) -> str:
         return """You are an expert Level Design AI specialized in procedural generation algorithms.
@@ -53,15 +55,22 @@ Return a LevelLayout with:
 
 Output MUST be valid JSON matching LevelLayout schema."""
 
-    async def execute(self, arch_plan: ArchitecturePlan) -> LevelLayout:
+    async def execute(self, arch_plan: ArchitecturePlan, 
+                     max_enemy_density: float = 0.5,
+                     max_item_density: float = 0.5) -> LevelLayout:
         """
         Execute the Level Generator agent.
         
         Args:
             arch_plan: Architecture Plan with level_parameters
+            max_enemy_density: Maximum enemy density per unit area
+            max_item_density: Maximum item density per unit area
             
         Returns:
-            LevelLayout object
+            Validated LevelLayout object
+            
+        Raises:
+            ValueError: If validation fails or no level_parameters
         """
         if not arch_plan.level_parameters:
             raise ValueError("No level_parameters in architecture plan")
@@ -69,7 +78,27 @@ Output MUST be valid JSON matching LevelLayout schema."""
         prompt = self._build_prompt(arch_plan)
         result = await self._call_llm(prompt, LevelLayout)
         
-        logger.info(f"Generated {len(result.rooms)} rooms using {result.algorithm}")
+        # Validate generated level
+        validator = create_level_validator(
+            max_enemy_density=max_enemy_density,
+            max_item_density=max_item_density
+        )
+        
+        validation_result = validator.validate_level(result)
+        
+        if not validation_result.passed:
+            error_msg = f"Level validation failed: {'; '.join(validation_result.errors)}"
+            logger.error(error_msg)
+            raise ValueError(error_msg)
+        
+        if validation_result.warnings:
+            for warning in validation_result.warnings:
+                logger.warning(f"Level warning: {warning}")
+        
+        # Mark as validated
+        result.validation_passed = True
+        
+        logger.info(f"Generated and validated {len(result.rooms)} rooms using {result.algorithm}")
         return result
     
     def _build_prompt(self, arch_plan: ArchitecturePlan) -> str:

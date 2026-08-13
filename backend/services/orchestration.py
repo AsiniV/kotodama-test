@@ -32,6 +32,7 @@ from backend.schemas.agent_schemas import (
 from backend.services.workspace_manager import get_workspace_manager
 from backend.services.incremental_analyzer import get_incremental_analyzer
 from backend.services.lore_rag_service import get_lore_rag_service
+from backend.services.art_pipeline import get_art_pipeline_service
 
 
 class GenerationState(TypedDict):
@@ -65,6 +66,7 @@ class OrchestratorService:
         self.workspace_manager = get_workspace_manager()
         self.analyzer = get_incremental_analyzer()
         self.lore_rag = get_lore_rag_service()
+        self.art_pipeline = get_art_pipeline_service()
         
         self.graph = self._build_graph()
 
@@ -232,7 +234,7 @@ class OrchestratorService:
             return {"error_message": f"Dialogue Writer failed: {str(e)}"}
 
     async def _run_art_director(self, state: GenerationState) -> dict:
-        """Run Art Director agent."""
+        """Run Art Director agent and generate assets via Art Pipeline Service."""
         try:
             # Get lore context if available
             lore_context = None
@@ -243,10 +245,14 @@ class OrchestratorService:
                 )
             
             art_style = state["wizard_input"].get("art_style", "pixel-art")
-            asset_output = await self.art_director.execute(
-                state["architecture_plan"],
-                lore_context,
-                art_style
+            
+            # Use Art Pipeline Service to coordinate full asset generation
+            project_id = state["wizard_input"].get("project_name", "unknown_project")
+            asset_output = await self.art_pipeline.generate_project_assets(
+                architecture_plan=state["architecture_plan"],
+                lore_context=lore_context,
+                art_style=art_style,
+                project_id=project_id
             )
             
             # Store asset paths for Coder
@@ -256,10 +262,17 @@ class OrchestratorService:
                 "asset_prompts": asset_output.prompts,
                 "generated_assets": asset_output.assets,
                 "asset_paths": asset_paths,
-                "messages": [f"✓ Generated {len(asset_output.prompts)} asset prompts"]
+                "messages": [f"✓ Generated {len(asset_output.prompts)} asset prompts, {len(asset_output.assets)} assets created"]
             }
         except Exception as e:
-            return {"error_message": f"Art Director failed: {str(e)}"}
+            logger.error(f"Art Director pipeline failed: {e}")
+            # Return empty assets on failure (non-blocking)
+            return {
+                "asset_prompts": [],
+                "generated_assets": [],
+                "asset_paths": [],
+                "messages": [f"⚠ Art generation skipped: {str(e)}"]
+            }
 
     async def _run_coder(self, state: GenerationState) -> dict:
         """Run Coder agent."""
