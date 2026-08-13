@@ -1,239 +1,305 @@
-# Kotodama - Modular Multi-Agent Game Generation Service
+# Kotodama (言霊) — Modular Multi-Agent Game Generation Service
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 [![Python 3.12+](https://img.shields.io/badge/python-3.12+-blue.svg)](https://www.python.org/downloads/)
 [![Godot 4.3+](https://img.shields.io/badge/Godot-4.3+-blue.svg?logo=godot-engine)](https://godotengine.org/)
+[![Next.js 15](https://img.shields.io/badge/Next.js-15-black?logo=next.js)](https://nextjs.org/)
 
 ## 🎮 Overview
 
-**Kotodama (言霊)** is a modular multi-agent game generation service built on Godot 4.3+. It uses 11 specialized AI agents orchestrated via LangGraph to generate complete, playable games from natural language descriptions.
+**Kotodama (言霊)** is a modular multi-agent game generation service built on Godot 4.3+. It uses **11 specialized AI agents** orchestrated via LangGraph to generate complete, playable games from natural language descriptions. The system follows a local-first architecture with three-tier uniqueness: immutable core engine, per-request content generation, and user-provided Lore RAG (Retrieval-Augmented Generation) for conceptual uniqueness.
 
 ### Core Features
 
-- **14-Step Wizard**: Intuitive game creation with cascading compatibility logic
-- **Multi-Agent Pipeline**: 11 specialized agents (Designer, Architect, Quest Designer, Dialogue Writer, Art Director, Coder, QA, Playtester, etc.)
-- **Three-Tier Uniqueness**: Core engine (stable), Content (generated per request), Lore RAG (user's knowledge base)
-- **Incremental Updates**: Safe module updates with automatic rollback on failure
+- **14-Step Wizard**: Intuitive game creation with cascading compatibility logic (genre↔perspective↔art style)
+- **Multi-Agent Pipeline**: 11 specialized agents (Designer, Architect, Quest Designer, Dialogue Writer, Art Director, Level Generator, Coder, QA, Playtester, Localization Manager, Prompt Refiner)
+- **Three-Tier Uniqueness**: Core engine (stable), Content (generated per request), Lore RAG (user's knowledge base in PGVector)
+- **Incremental Updates**: Safe module updates with automatic rollback on failure (Two-Attempt Rule)
 - **Procedural Generation**: BSP, Cellular Automata, Wave Function Collapse for levels
-- **Quest & Dialogue Systems**: State machine graphs and branching dialogue trees
-- **AI Playtester**: Automated testing with bot-player simulation
+- **Quest & Dialogue Systems**: State machine graphs and branching dialogue trees with validators
+- **AI Playtester**: Automated testing with bot-player simulation (move, interact, collect, attack, talk)
 - **Localization Support**: Automatic text extraction and key management
-- **Asset Pipeline**: Stable Diffusion integration with metadata tracking
+- **Asset Pipeline**: Stable Diffusion integration with 10-slot vocabulary and metadata tracking
+- **Save/Load System**: Auto-generated when enabled in wizard
 
 ## 🏗️ Architecture
 
 ```
-┌─────────────────────────────────────────────────────────────┐
-│                      Frontend (Next.js)                     │
-│   Wizard UI │ Live Preview │ Lore Manager │ Dashboard      │
-└─────────────────────────────────────────────────────────────┘
-                            │ WebSocket/REST
-┌─────────────────────────────────────────────────────────────┐
-│                    Backend (FastAPI + LangGraph)            │
-│  ┌──────────────────────────────────────────────────────┐  │
-│  │              Agent Orchestration Pipeline             │  │
-│  │                                                       │  │
-│  │  Designer → Architect → QuestDesigner → DialogueWriter│  │
-│  │      ↓                                              ↓  │  │
-│  │  ArtDirector → LevelGenerator → Coder → QA → Playtest│  │
-│  │                                                       │  │
-│  └──────────────────────────────────────────────────────┘  │
-│                                                             │
-│  Database: PostgreSQL + PGVector │ Storage: MinIO          │
-└─────────────────────────────────────────────────────────────┘
-                            │ Headless CLI
-┌─────────────────────────────────────────────────────────────┐
-│                  Godot 4.3+ Core Engine                     │
-│   Scene Manager │ Signal Bus │ State Machine │ Input System│
-│   Modules: Player │ Inventory │ Quest │ Dialogue │ Save    │
-└─────────────────────────────────────────────────────────────┘
+┌─────────────────────────────────────────────────────────────────┐
+│                      Frontend (Next.js 15)                      │
+│   14-Step Wizard │ Live Preview │ Lore Manager │ Dashboard     │
+└─────────────────────────────────────────────────────────────────┘
+                              │ WebSocket / REST API
+┌─────────────────────────────────────────────────────────────────┐
+│                Backend (FastAPI + LangGraph)                    │
+│  ┌───────────────────────────────────────────────────────────┐ │
+│  │              Agent Orchestration Pipeline                 │ │
+│  │                                                           │ │
+│  │  Designer → Architect → QuestDesigner → DialogueWriter   │ │
+│  │      ↓                                                 ↓  │ │
+│  │  ArtDirector → LevelGenerator → Coder → QA → Playtest  │ │
+│  │      ↑                                                 │  │ │
+│  │      └─────── Retry (Attempt 1) ←──────────────────────┘  │ │
+│  │                                    │                       │ │
+│  │                                    └→ Rollback (Attempt 2) │ │
+│  └───────────────────────────────────────────────────────────┘ │
+│                                                                 │
+│  Database: PostgreSQL 16 + PGVector │ Storage: MinIO (S3)     │
+└─────────────────────────────────────────────────────────────────┘
+                              │ Headless CLI
+┌─────────────────────────────────────────────────────────────────┐
+│                  Godot 4.3+ Core Engine (Immutable)             │
+│   Scene Manager │ Signal Bus │ State Machine │ Input System   │
+│   Modules: Player │ Inventory │ Quest │ Dialogue │ Save/Load  │
+└─────────────────────────────────────────────────────────────────┘
+```
+
+## 🚀 Quick Start (5 Commands)
+
+```bash
+# 1. Clone repository
+git clone https://github.com/your-org/kotodama.git && cd kotodama
+
+# 2. Copy environment configuration
+cp .env.example .env
+
+# 3. Start all infrastructure services
+docker-compose up -d postgres minio redis ollama
+
+# 4. Install dependencies and run migrations
+make setup
+
+# 5. Start development server
+make dev
+```
+
+Access the application at:
+- **Frontend**: http://localhost:3000
+- **Backend API**: http://localhost:8000
+- **API Docs**: http://localhost:8000/docs
+- **MinIO Console**: http://localhost:9001 (admin / kotodama_minio_secret_k8s_key_2026)
+
+## 📖 Complete Setup Guide
+
+### Prerequisites
+
+| Software | Version | Purpose |
+|----------|---------|---------|
+| Python | 3.12+ | Backend runtime |
+| Node.js | 20+ | Frontend runtime |
+| Docker | 24+ | Containerization |
+| Docker Compose | 2.20+ | Multi-container orchestration |
+| Godot | 4.3+ | Game engine (optional for local testing) |
+| Ollama | Latest | Local LLM inference |
+
+### Step 1: Environment Configuration
+
+```bash
+cp .env.example .env
+# Edit .env with your configuration values
+```
+
+Key variables to configure:
+- `DATABASE_URL`: PostgreSQL connection string
+- `MINIO_SECRET_KEY`: Change to a secure random value
+- `SECRET_KEY`: Minimum 32 characters for JWT signing
+- `OLLAMA_BASE_URL`: Usually `http://localhost:11434`
+
+### Step 2: Pull Ollama Models
+
+```bash
+make ollama-pull
+# Or manually:
+docker exec kotodama-ollama ollama pull qwen2.5-coder:32b
+docker exec kotodama-ollama ollama pull qwen2.5:32b
+docker exec kotodama-ollama ollama pull nomic-embed-text
+```
+
+### Step 3: Create MinIO Buckets
+
+```bash
+make minio-create-buckets
+```
+
+### Step 4: Run Migrations
+
+```bash
+make migrate
+```
+
+### Step 5: Start Development
+
+```bash
+# Backend only
+make dev
+
+# Full stack (backend + frontend)
+make dev-full
 ```
 
 ## 📁 Project Structure
 
 ```
 kotodama/
-├── backend/                 # Python FastAPI backend
+├── backend/                 # FastAPI backend (Phases 0-9)
 │   ├── agents/             # 11 specialized AI agents
 │   ├── api/                # REST API endpoints
-│   ├── core/               # Configuration, guards, utilities
-│   ├── db/                 # Database session & models
+│   ├── core/               # Configuration & guards
+│   ├── db/                 # Database layer
 │   ├── models/             # SQLAlchemy ORM models
 │   ├── schemas/            # Pydantic validation schemas
 │   ├── services/           # Business logic services
-│   └── utils/              # Helper functions
+│   ├── utils/              # Helper functions
+│   └── validators/         # Content validators
 ├── frontend/               # Next.js 15 frontend
-├── godot_core/             # Immutable Godot core engine
+│   └── app/
+│       ├── components/     # UI components (shadcn/ui)
+│       ├── wizard/         # 14-step game creation wizard
+│       ├── store/          # Zustand state management
+│       └── lib/            # Utilities
+├── godot_core/             # Immutable Godot 4.3+ core
+│   ├── scenes/             # Base scenes
+│   └── scripts/
+│       ├── core/           # Core engine scripts
+│       ├── modules/        # Generated modules
+│       └── bot_player/     # AI playtester bot
 ├── docker/                 # Docker configurations
-├── configs/                # Configuration files
-├── tests/                  # Test suites
-└── scripts/                # Development & deployment scripts
+├── configs/                # YAML/JSON configurations
+├── tests/                  # Test suites (unit, integration, e2e)
+├── docs/                   # Documentation
+└── scripts/                # Development scripts
 ```
 
-## 🚀 Quick Start
+## ⚙️ Configuration
 
-### Prerequisites
+### Agent Models
 
-- Python 3.12+
-- Docker & Docker Compose
-- Godot 4.3+ (for local testing)
-- Ollama (for local LLM inference)
-- Node.js 20+ (for frontend development)
+| Agent | Model | Temperature |
+|-------|-------|-------------|
+| Designer | qwen2.5:32b | 0.6 |
+| Architect | qwen2.5:32b | 0.3 |
+| Coder | qwen2.5-coder:32b | 0.15 |
+| Embeddings | nomic-embed-text | N/A |
 
-### 1. Clone Repository
-
-```bash
-git clone https://github.com/your-org/kotodama.git
-cd kotodama
-```
-
-### 2. Environment Setup
-
-```bash
-cp .env.example .env
-# Edit .env with your configuration
-```
-
-### 3. Start Infrastructure (Docker)
-
-```bash
-docker-compose up -d postgres minio redis
-```
-
-### 4. Install Dependencies
-
-```bash
-pip install -e ".[dev]"
-```
-
-### 5. Initialize Database
-
-```bash
-python scripts/init_db.py
-```
-
-### 6. Start Development Server
-
-```bash
-uvicorn backend.main:app --reload --host 0.0.0.0 --port 8000
-```
-
-Visit `http://localhost:8000/docs` for API documentation.
-
-## 🤖 Agent Pipeline
-
-| # | Agent | Responsibility |
-|---|-------|----------------|
-| 1 | **Game Designer** | Converts wizard input + Lore into structured JSON GDD |
-| 2 | **Architect** | Plans Godot scene structure and Signal contracts |
-| 3 | **Quest Designer** | Generates quests as state machine graphs |
-| 4 | **Dialogue Writer** | Creates branching dialogue trees |
-| 5 | **Art Director** | Generates image prompts and manages asset slots |
-| 6 | **Coder** | Writes clean GDScript for modules |
-| 7 | **QA & Integrator** | Validates syntax, signals, and guard compliance |
-| 8 | **AI Playtester** | Runs headless tests and stability scoring |
-| 9 | **Prompt Refiner** | Improves prompts based on generation history |
-| 10 | **Level Generator** | Procedural level generation (BSP, CA, WFC) |
-| 11 | **Localization Manager** | Extracts text strings for i18n |
-
-## 📊 Development Phases
-
-| Phase | Focus | Weeks | Status |
-|-------|-------|-------|--------|
-| 0 | Foundation (Docker, DB, Core) | 1-2 | ✅ Complete |
-| 1 | Core Agents + Infrastructure | 3-4 | ✅ Complete |
-| 2 | RAG + Incremental Updates | 5-6 | ✅ Complete |
-| 3 | UI/UX (Wizard, Preview) | 7-8 | ✅ Complete |
-| 4 | Art Pipeline | 9-10 | ✅ Complete |
-| 5 | Quest & Dialogue Systems | 11-12 | ✅ Complete |
-| 6 | Procedural Levels | 13-14 | ✅ Complete |
-| 7 | Enhanced Playtester + Save/Load | 15-16 | ✅ Complete |
-| 8 | Localization + Monetization | 17-18 | ✅ Complete |
-| 9 | Export + Marketplace + Launch | 19-20 | ✅ Complete |
-
-**🎉 All 10 phases complete! The full Kotodama platform is production-ready.**
-
-## 💰 Subscription Plans
+### Subscription Plans
 
 | Plan | Price | Credits/Month | Features |
 |------|-------|---------------|----------|
-| **Free** | $0 | Limited | Watermark, Web export only |
-| **Starter** | $9.99/mo | 50 | APK export, No watermark |
-| **Pro** | $29.99/mo | 200 | Priority queue, HD assets |
-| **Studio** | $99.99/mo | 1000 | White-label, API access |
+| Free | $0 | Limited | Watermark, Web export only |
+| Starter | $9.99/mo | 50 | APK export, watermark removal |
+| Pro | $29.99/mo | 200 | Priority queue, HD assets |
+| Studio | $99.99/mo | 1000 | White-label, API access |
 
-## 🔒 Security & Guards
+## 🚢 Production Deployment
 
-- **Code Guards**: All generated files pass through `guard.py` before disk write
-- **AST Scanner**: Blocks dangerous APIs (`OS.execute`, `HTTPClient`, filesystem access)
-- **Sandboxed Execution**: Generation and testing in ephemeral Docker containers
-- **Perceptual Hash**: Asset plagiarism detection for marketplace (0.85 similarity threshold)
-- **Module Marketplace Security**: Automatic static code analysis before publication
+### Using Docker Compose
 
-## 🚀 Phase 9: Export + Marketplace (Latest)
+```bash
+# Build production images
+make build
 
-### Multi-Platform Export
+# Deploy to production
+make deploy
 
-| Platform | Format | Tools | Status |
-|----------|--------|-------|--------|
-| **Web** | HTML5 + WASM | Godot Headless, Brotli | ✅ Ready |
-| **Android** | APK/AAB | Godot Headless, Fastlane | ✅ Ready |
-| **iOS** | IPA | Godot Headless, Fastlane | ✅ Ready |
-| **Windows** | EXE | Godot Headless | ✅ Ready |
-| **macOS** | APP/DMG | Godot Headless | ✅ Ready |
-| **Linux** | X11/Wayland | Godot Headless | ✅ Ready |
-
-### Module Marketplace
-
-- **Security Scanner**: AST-based detection of malicious code patterns
-- **Plagiarism Detection**: Perceptual hashing for asset verification
-- **Categories**: Player Controllers, Enemy AI, Inventory, Quest Systems, Dialogue, UI, Audio, VFX
-- **Pricing**: Free or credit-based (author sets price, 25-30% platform commission)
-- **Search**: Full-text search with filters by category, rating, price
-
-### Key Services
-
-```python
-# Marketplace Service
-marketplace_service.submit_module()      # Submit with auto-security scan
-marketplace_service.search_modules()     # Search with filters
-marketplace_service.check_plagiarism()   # Perceptual hash comparison
-marketplace_service.validate_code()      # AST security validation
-
-# Export Service
-export_service.create_export_job()       # Queue export request
-export_service.build_web()               # Web export with compression
-export_service.build_android()           # APK with signing
-export_service.build_ios()               # IPA with signing
-export_service.upload_to_store()         # Fastlane store upload
+# View logs
+make logs
 ```
 
-## 📝 License
+### Kubernetes (Future)
 
-MIT License - see [LICENSE](LICENSE) file for details.
+Production deployment will support Kubernetes with:
+- Horizontal Pod Autoscaler for backend
+- Persistent Volumes for PostgreSQL, MinIO
+- Ingress controller with SSL termination
+- Redis cluster for caching
 
----
+## 🔧 Troubleshooting
 
-## 🎯 Production Status
+### Issue 1: Ollama Connection Refused
 
-**Kotodama v2.0 is production-ready!** All 10 development phases have been completed and tested:
+**Symptom**: `Connection refused` error when calling LLM APIs
 
-- ✅ **11 AI Agents** fully operational via LangGraph orchestration
-- ✅ **Quest & Dialogue Systems** with state machine graphs and branching trees
-- ✅ **Procedural Level Generation** (BSP, Cellular Automata, WFC)
-- ✅ **AI Playtester** with bot-player simulation and stability scoring
-- ✅ **Save/Load System** with automatic serialization
-- ✅ **Localization Support** with automatic text extraction
-- ✅ **Asset Pipeline** with Stable Diffusion integration
-- ✅ **Lore RAG** with PGVector for personalized universes
-- ✅ **Module Marketplace** with AST security scanning and plagiarism detection
-- ✅ **Multi-Platform Export** (Web, Android, iOS, Windows, macOS, Linux)
+**Solution**:
+```bash
+# Check if Ollama is running
+docker ps | grep ollama
 
-### Quick Links
+# Restart Ollama container
+docker-compose restart ollama
 
-- [API Documentation](http://localhost:8000/docs) - FastAPI Swagger UI
-- [Technical Specification](SPECIFICATION.md) - Full v2.0 spec
-- [Phase 9 Report](PHASE9_COMPLETION_REPORT.md) - Latest deliverables
+# Verify models are loaded
+docker exec kotodama-ollama ollama list
+```
+
+### Issue 2: PostgreSQL PGVector Extension Missing
+
+**Symptom**: `extension "vector" does not exist`
+
+**Solution**:
+```bash
+# Ensure using pgvector image
+docker-compose up -d postgres
+
+# Run initialization script
+docker exec kotodama-postgres psql -U kotodama -c "CREATE EXTENSION IF NOT EXISTS vector;"
+```
+
+### Issue 3: MinIO Bucket Not Found
+
+**Symptom**: `Bucket not found` error during asset generation
+
+**Solution**:
+```bash
+make minio-create-buckets
+# Or manually create buckets via MinIO console
+```
+
+### Issue 4: Frontend Build Fails
+
+**Symptom**: `Module not found` errors during npm build
+
+**Solution**:
+```bash
+cd frontend
+rm -rf node_modules package-lock.json
+npm install
+npm run build
+```
+
+### Issue 5: Godot Export Fails
+
+**Symptom**: Export process hangs or fails
+
+**Solution**:
+```bash
+# Check Godot version matches
+docker exec kotodama-godot godot --version
+
+# Verify export presets exist
+ls -la godot_core/export_presets.cfg
+
+# Run headless test
+make godot-test
+```
+
+## 📄 License
+
+MIT License — see [LICENSE](LICENSE) for details.
+
+## 🤝 Contributing
+
+1. Fork the repository
+2. Create a feature branch (`git checkout -b feature/amazing-feature`)
+3. Commit your changes (`git commit -m 'Add amazing feature'`)
+4. Push to the branch (`git push origin feature/amazing-feature`)
+5. Open a Pull Request
+
+## 📞 Support
+
+- **Documentation**: `/docs` directory
+- **API Reference**: http://localhost:8000/docs
+- **Issues**: GitHub Issues
+- **Discussions**: GitHub Discussions
 
 ---
 
