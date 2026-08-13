@@ -4,14 +4,20 @@ import { useWizardStore } from '@/store/wizardStore';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
-import { CheckCircle2, AlertTriangle } from 'lucide-react';
+import { CheckCircle2, AlertTriangle, Loader2 } from 'lucide-react';
+import { useState } from 'react';
+import { api, WizardInput } from '@/lib/api';
 
 export function ConfirmationStep() {
   const { 
     genre, perspective, artStyle, setting, scale, controls,
     savingEnabled, monetization, questComplexity, dialogueDepth,
-    loreId, description 
+    loreId, description, reset
   } = useWizardStore();
+
+  const [isGenerating, setIsGenerating] = useState(false);
+  const [projectId, setProjectId] = useState<string | null>(null);
+  const [generationError, setGenerationError] = useState<string | null>(null);
 
   const summary = [
     { label: 'Genre', value: genre },
@@ -29,6 +35,44 @@ export function ConfirmationStep() {
 
   const estimatedCredits = 10; // Base cost
   const estimatedTime = '3-5 minutes';
+
+  const handleStartGeneration = async () => {
+    if (!genre || !perspective || !artStyle) {
+      setGenerationError('Please complete all required steps');
+      return;
+    }
+
+    setIsGenerating(true);
+    setGenerationError(null);
+
+    try {
+      const wizardInput: WizardInput = {
+        genre: genre!,
+        perspective: perspective!,
+        art_style: artStyle!,
+        setting: setting!,
+        scale: scale!,
+        controls: controls!,
+        saving_enabled: savingEnabled,
+        monetization: monetization!,
+        quest_complexity: questComplexity,
+        dialogue_depth: dialogueDepth,
+        lore_id: loreId,
+        description: description,
+      };
+
+      const result = await api.startGeneration(wizardInput);
+      setProjectId(result.project_id);
+      
+      // Navigate to preview step or status page
+      // For now, we'll just show success message
+      alert(`Generation started! Project ID: ${result.project_id}\nEstimated time: ${result.estimated_time_seconds}s\nCredits: ${result.estimated_credits}`);
+    } catch (error) {
+      setGenerationError(error instanceof Error ? error.message : 'Failed to start generation');
+    } finally {
+      setIsGenerating(false);
+    }
+  };
 
   return (
     <div className="space-y-4">
@@ -88,6 +132,18 @@ export function ConfirmationStep() {
             </ul>
           </div>
         </div>
+
+        {generationError && (
+          <div className="bg-red-50 border border-red-200 p-4 rounded-lg">
+            <p className="text-sm font-medium text-red-800">Error: {generationError}</p>
+          </div>
+        )}
+
+        {projectId && (
+          <div className="bg-green-50 border border-green-200 p-4 rounded-lg">
+            <p className="text-sm font-medium text-green-800">✓ Generation started! Project ID: {projectId}</p>
+          </div>
+        )}
       </CardContent>
     </div>
   );

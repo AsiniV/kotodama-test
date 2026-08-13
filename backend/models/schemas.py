@@ -90,7 +90,7 @@ class LoreEntry(Base):
     entry_type = Column(String(50), nullable=False)  # character, location, rule, item, faction, event
     name = Column(String(255), nullable=False)
     content = Column(Text, nullable=False)
-    metadata = Column(JSON)
+    entry_metadata = Column(JSON)  # Renamed from metadata to avoid conflict
     embedding = Column(JSON)  # PGVector embedding stored as JSON for compatibility
     created_at = Column(DateTime(timezone=True), server_default=func.now())
 

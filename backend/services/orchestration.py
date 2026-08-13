@@ -19,15 +19,19 @@ from langgraph.checkpoint.memory import MemorySaver
 
 from backend.agents.designer import GameDesignerAgent
 from backend.agents.architect import ArchitectAgent
+from backend.agents.quest_designer import QuestDesignerAgent
+from backend.agents.dialogue_writer import DialogueWriterAgent
+from backend.agents.art_director import ArtDirectorAgent
 from backend.agents.coder import CoderAgent
 from backend.agents.qa import QAAgent
 from backend.agents.playtester import AIPlaytesterAgent
 from backend.schemas.agent_schemas import (
     GameDesignDocument, ArchitecturePlan, GeneratedFile,
-    QAReport, PlaytestReport, PlaytestConfig
+    QAReport, PlaytestReport, PlaytestConfig, QuestGraph, DialogueTree
 )
 from backend.services.workspace_manager import get_workspace_manager
 from backend.services.incremental_analyzer import get_incremental_analyzer
+from backend.services.lore_rag_service import get_lore_rag_service
 
 
 class GenerationState(TypedDict):
@@ -52,11 +56,15 @@ class OrchestratorService:
     def __init__(self):
         self.designer = GameDesignerAgent()
         self.architect = ArchitectAgent()
+        self.quest_designer = QuestDesignerAgent()
+        self.dialogue_writer = DialogueWriterAgent()
+        self.art_director = ArtDirectorAgent()
         self.coder = CoderAgent()
         self.qa = QAAgent()
         self.playtester = AIPlaytesterAgent()
         self.workspace_manager = get_workspace_manager()
         self.analyzer = get_incremental_analyzer()
+        self.lore_rag = get_lore_rag_service()
         
         self.graph = self._build_graph()
 
@@ -190,19 +198,68 @@ class OrchestratorService:
             return {"error_message": f"Architect failed: {str(e)}"}
 
     async def _run_quest_designer(self, state: GenerationState) -> dict:
-        """Run Quest Designer agent (placeholder)."""
-        # TODO: Implement in Phase 5
-        return {"messages": ["⏳ Quest Designer: Skipped (Phase 5)"]}
+        """Run Quest Designer agent."""
+        try:
+            if state["gdd"].quest_complexity == "none":
+                return {"quest_graphs": [], "messages": ["⏳ Quest Designer: Skipped (complexity=none)"]}
+            
+            quest_graphs = await self.quest_designer.execute(state["gdd"], state["architecture_plan"])
+            return {"quest_graphs": quest_graphs, "messages": [f"✓ Generated {len(quest_graphs)} quests"]}
+        except Exception as e:
+            return {"error_message": f"Quest Designer failed: {str(e)}"}
 
     async def _run_dialogue_writer(self, state: GenerationState) -> dict:
-        """Run Dialogue Writer agent (placeholder)."""
-        # TODO: Implement in Phase 5
-        return {"messages": ["⏳ Dialogue Writer: Skipped (Phase 5)"]}
+        """Run Dialogue Writer agent."""
+        try:
+            if state["gdd"].dialogue_depth == "none":
+                return {"dialogue_trees": [], "messages": ["⏳ Dialogue Writer: Skipped (depth=none)"]}
+            
+            # Get lore context if available
+            lore_context = None
+            if state["wizard_input"].get("lore_collection_id"):
+                lore_context = await self.lore_rag.get_collection_context(
+                    state["wizard_input"]["lore_collection_id"],
+                    "dialogue characters NPCs"
+                )
+            
+            dialogue_trees = await self.dialogue_writer.execute(
+                state["gdd"],
+                state.get("quest_graphs", []),
+                lore_context
+            )
+            return {"dialogue_trees": dialogue_trees, "messages": [f"✓ Generated {len(dialogue_trees)} dialogue trees"]}
+        except Exception as e:
+            return {"error_message": f"Dialogue Writer failed: {str(e)}"}
 
     async def _run_art_director(self, state: GenerationState) -> dict:
-        """Run Art Director agent (placeholder)."""
-        # TODO: Implement in Phase 4
-        return {"messages": ["⏳ Art Director: Skipped (Phase 4)"]}
+        """Run Art Director agent."""
+        try:
+            # Get lore context if available
+            lore_context = None
+            if state["wizard_input"].get("lore_collection_id"):
+                lore_context = await self.lore_rag.get_collection_context(
+                    state["wizard_input"]["lore_collection_id"],
+                    "art style visual aesthetic"
+                )
+            
+            art_style = state["wizard_input"].get("art_style", "pixel-art")
+            asset_output = await self.art_director.execute(
+                state["architecture_plan"],
+                lore_context,
+                art_style
+            )
+            
+            # Store asset paths for Coder
+            asset_paths = [asset.path for asset in asset_output.assets]
+            
+            return {
+                "asset_prompts": asset_output.prompts,
+                "generated_assets": asset_output.assets,
+                "asset_paths": asset_paths,
+                "messages": [f"✓ Generated {len(asset_output.prompts)} asset prompts"]
+            }
+        except Exception as e:
+            return {"error_message": f"Art Director failed: {str(e)}"}
 
     async def _run_coder(self, state: GenerationState) -> dict:
         """Run Coder agent."""
