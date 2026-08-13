@@ -89,7 +89,13 @@ def create_app() -> FastAPI:
     app.include_router(generation.router, prefix="/api/v1/generation", tags=["generation"])
     app.include_router(lore.router, prefix="/api/v1/lore", tags=["lore"])
     
-    logger.info("API routers registered")
+    # Register Phase 9 routers (Export + Marketplace)
+    from backend.api import marketplace, export
+    
+    app.include_router(marketplace.router, prefix="/api/v1/marketplace", tags=["marketplace"])
+    app.include_router(export.router, prefix="/api/v1/export", tags=["export"])
+    
+    logger.info("API routers registered (including Phase 9: Export + Marketplace)")
     
     logger.info("Application created successfully")
     return app
