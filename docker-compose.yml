@@ -1,0 +1,144 @@
+version: '3.8'
+
+services:
+  # PostgreSQL with PGVector extension for Lore RAG
+  postgres:
+    image: pgvector/pgvector:pg16
+    container_name: kotodama-postgres
+    environment:
+      POSTGRES_USER: kotodama
+      POSTGRES_PASSWORD: kotodama_secret
+      POSTGRES_DB: kotodama
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./docker/postgres/init.sql:/docker-entrypoint-initdb.d/init.sql
+    networks:
+      - kotodama-network
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U kotodama -d kotodama"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # MinIO for asset storage (S3-compatible)
+  minio:
+    image: minio/minio:latest
+    container_name: kotodama-minio
+    environment:
+      MINIO_ROOT_USER: kotodama_admin
+      MINIO_ROOT_PASSWORD: kotodama_minio_secret
+    command: server /data --console-address ":9001"
+    ports:
+      - "9000:9000"  # API
+      - "9001:9001"  # Console
+    volumes:
+      - minio_data:/data
+    networks:
+      - kotodama-network
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:9000/minio/health/live"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # Redis for caching and task queue
+  redis:
+    image: redis:7-alpine
+    container_name: kotodama-redis
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+    networks:
+      - kotodama-network
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # Ollama for local LLM inference
+  ollama:
+    image: ollama/ollama:latest
+    container_name: kotodama-ollama
+    ports:
+      - "11434:11434"
+    volumes:
+      - ollama_data:/root/.ollama
+    networks:
+      - kotodama-network
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:11434/api/tags"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+    # Remove gpu section if no NVIDIA GPU available
+    # Ollama will use CPU fallback
+
+  # Backend API service
+  backend:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile.backend
+    container_name: kotodama-backend
+    environment:
+      DATABASE_URL: postgresql+asyncpg://kotodama:kotodama_secret@postgres:5432/kotodama
+      REDIS_URL: redis://redis:6379
+      MINIO_ENDPOINT: minio:9000
+      MINIO_ACCESS_KEY: kotodama_admin
+      MINIO_SECRET_KEY: kotodama_minio_secret
+      MINIO_BUCKET_ASSETS: kotodama-assets
+      MINIO_BUCKET_BUILDS: kotodama-builds
+      OLLAMA_BASE_URL: http://ollama:11434
+      LOG_LEVEL: INFO
+      DEBUG: "true"
+    ports:
+      - "8000:8000"
+    volumes:
+      - ./backend:/app/backend
+      - ./godot_core:/app/godot_core
+      - workspace_data:/app/workspace
+    depends_on:
+      postgres:
+        condition: service_healthy
+      minio:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      ollama:
+        condition: service_healthy
+    networks:
+      - kotodama-network
+
+  # Godot Headless for testing and builds
+  godot-headless:
+    image: barichello/godot-ci:4.3
+    container_name: kotodama-godot
+    volumes:
+      - ./godot_core:/godot/core
+      - ./workspace:/godot/workspace
+      - godot_cache:/root/.local/share/godot
+    networks:
+      - kotodama-network
+    entrypoint: ["sleep", "infinity"]
+
+volumes:
+  postgres_data:
+  minio_data:
+  redis_data:
+  ollama_data:
+  workspace_data:
+  godot_cache:
+
+networks:
+  kotodama-network:
+    driver: bridge

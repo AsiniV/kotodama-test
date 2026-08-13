@@ -21,18 +21,21 @@ wheels/
 .installed.cfg
 *.egg
 
-# Virtual environments
-venv/
-env/
-ENV/
+# Environment
+.env
+.env.local
+.env.*
+.env~*
 .venv/
-.env/
+venv/
+ENV/
 
 # IDE
 .vscode/
 .idea/
 *.swp
 *.swo
+*.tmp
 
 # OS
 .DS_Store
@@ -46,35 +49,18 @@ Thumbs.db
 htmlcov/
 .coverage.*
 
-# Distribution / packaging
-.Python
-build/
-develop-eggs/
+# Docker
+.dockerenv
+
+# Frontend
+node_modules/
+.next/
+out/
 dist/
-downloads/
-eggs/
-.eggs/
-lib/
-lib64/
-parts/
-sdist/
-var/
-wheels/
-pip-wheel-metadata/
-share/python-wheels/
-*.egg-info/
-.installed.cfg
-*.egg
-MANIFEST
+build/
 
-# Pytest
-.pytest_cache/
-
-# Mypy
-.mypy_cache/
-
-# Environment variables
-.env
-.env.local
-.env.*
+# Godot
+.godot/
+*.import
+export_presets.cfg
 ```
