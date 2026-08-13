@@ -47,6 +47,13 @@ class Settings(BaseSettings):
 
     # Fal.ai
     fal_ai_key: str | None = None
+    fal_api_key: str | None = None  # Alias for consistency
+
+    # Replicate
+    replicate_api_key: str | None = None
+
+    # Image Generation Provider
+    image_gen_provider: str = "local"  # Options: "local", "fal", "replicate"
 
     # JWT
     jwt_secret_key: str = "your-secret-key-change-in-production"
