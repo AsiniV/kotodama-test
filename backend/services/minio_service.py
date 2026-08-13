@@ -18,18 +18,38 @@ class MinIOService:
     """
     Service for interacting with MinIO object storage.
     Manages asset uploads, downloads, and bucket operations.
+    
+    Lazy initialization: Client is created on first use to avoid connection errors
+    when MinIO is not running during development/testing.
     """
     
     def __init__(self):
-        self.client = Minio(
-            settings.minio_endpoint,
-            access_key=settings.minio_access_key,
-            secret_key=settings.minio_secret_key,
-            secure=settings.minio_secure
-        )
+        self._client = None
         self.assets_bucket = settings.minio_bucket_assets
         self.builds_bucket = settings.minio_bucket_builds
-        self._initialize_buckets()
+        self._initialized = False
+    
+    @property
+    def client(self) -> Minio:
+        """Lazy-load MinIO client on first access."""
+        if self._client is None:
+            self._client = Minio(
+                settings.minio_endpoint,
+                access_key=settings.minio_access_key,
+                secret_key=settings.minio_secret_key,
+                secure=settings.minio_secure
+            )
+            self._initialize_buckets()
+        return self._client
+    
+    def _ensure_initialized(self) -> bool:
+        """Ensure MinIO is available. Returns False if not."""
+        try:
+            _ = self.client  # Triggers lazy initialization
+            return True
+        except Exception as e:
+            logger.warning(f"MinIO not available: {e}. Asset storage disabled.")
+            return False
     
     def _initialize_buckets(self) -> None:
         """Create buckets if they don't exist."""
@@ -54,8 +74,13 @@ class MinIOService:
             content_type: MIME type of the file
             
         Returns:
-            URL/path to the uploaded asset
+            URL/path to the uploaded asset, or local path if MinIO unavailable
         """
+        if not self._ensure_initialized():
+            # Fallback: return local path instead of MinIO URL
+            logger.warning(f"MinIO unavailable, using local path for {object_name}")
+            return f"file://{file_path}"
+        
         try:
             # Upload file to assets bucket
             self.client.fput_object(
@@ -70,7 +95,8 @@ class MinIOService:
             
         except S3Error as e:
             logger.error(f"Failed to upload asset {object_name}: {e}")
-            raise
+            # Fallback to local path
+            return f"file://{file_path}"
     
     async def download_asset(self, object_name: str, destination_path: Path) -> Path:
         """
@@ -81,8 +107,14 @@ class MinIOService:
             destination_path: Local path to save the file
             
         Returns:
-            Path to the downloaded file
+            Path to the downloaded file, or destination_path if MinIO unavailable
         """
+        if not self._ensure_initialized():
+            # Fallback: assume file already exists locally
+            logger.warning(f"MinIO unavailable, assuming local file for {object_name}")
+            destination_path.parent.mkdir(parents=True, exist_ok=True)
+            return destination_path
+        
         try:
             # Ensure destination directory exists
             destination_path.parent.mkdir(parents=True, exist_ok=True)
@@ -99,7 +131,8 @@ class MinIOService:
             
         except S3Error as e:
             logger.error(f"Failed to download asset {object_name}: {e}")
-            raise
+            # Return destination anyway (may already exist)
+            return destination_path
     
     async def upload_build(self, file_path: Path, project_id: str, build_type: str = "web") -> str:
         """

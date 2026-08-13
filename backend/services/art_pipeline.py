@@ -181,7 +181,7 @@ class ArtPipelineService:
         logger.info(f"Prepared {len(relative_paths)} asset paths for Coder")
         return relative_paths
     
-    async def validate_asset_slots(self, asset_slots: list[str]) -> tuple[bool, list[str]]:
+    def validate_asset_slots(self, asset_slots: list[str]) -> tuple[bool, list[str]]:
         """
         Validate that requested asset slots are from the closed vocabulary.
         
@@ -191,7 +191,7 @@ class ArtPipelineService:
         Returns:
             Tuple of (is_valid, list_of_errors)
         """
-        valid_slots = self.art_director.VALID_SLOTS
+        valid_slots = ["player", "enemy", "background", "ui_button", "tileset", "item", "npc", "projectile", "hazard", "icon"]
         errors = []
         
         for slot in asset_slots:
