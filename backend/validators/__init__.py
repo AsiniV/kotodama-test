@@ -53,10 +53,11 @@ class QuestGraphValidator:
     """
     
     def __init__(self, item_registry: set[str] = None, npc_registry: set[str] = None, 
-                 location_registry: set[str] = None):
+                 location_registry: set[str] = None, flag_registry: set[str] = None):
         self.item_registry = item_registry or set()
         self.npc_registry = npc_registry or set()
         self.location_registry = location_registry or set()
+        self.flag_registry = flag_registry or set()
     
     def validate_single_quest(self, quest: QuestGraph) -> ValidationResult:
         """Validate a single quest graph."""
@@ -77,7 +78,8 @@ class QuestGraphValidator:
         for stage in quest.stages:
             if stage.requirements:
                 for req in stage.requirements:
-                    if req not in self.item_registry and req not in self.npc_registry:
+                    # Check if requirement is an item, NPC, or flag
+                    if req not in self.item_registry and req not in self.npc_registry and req not in self.flag_registry:
                         result.passed = False
                         result.errors.append(
                             f"Quest '{quest.quest_id}' stage '{stage.id}' requires unknown item/flag: {req}"
@@ -483,12 +485,14 @@ class LevelLayoutValidator:
 
 def create_quest_validator(item_registry: set[str] = None, 
                           npc_registry: set[str] = None,
-                          location_registry: set[str] = None) -> QuestGraphValidator:
+                          location_registry: set[str] = None,
+                          flag_registry: set[str] = None) -> QuestGraphValidator:
     """Factory function to create a QuestGraphValidator."""
     return QuestGraphValidator(
         item_registry=item_registry,
         npc_registry=npc_registry,
-        location_registry=location_registry
+        location_registry=location_registry,
+        flag_registry=flag_registry
     )
 
 
