@@ -33,7 +33,27 @@ export interface WizardState {
   reset: () => void;
 }
 
-const initialState: Omit<WizardState, keyof Pick<WizardState, 'setStep' | 'nextStep' | 'prevStep' | 'setGenre' | 'setPerspective' | 'setArtStyle' | 'setSetting' | 'setScale' | 'setControls' | 'setSavingEnabled' | 'setMonetization' | 'setQuestComplexity' | 'setDialogueDepth' | 'setLoreId' | 'setDescription' | 'reset'> = {
+type WizardSetters = Pick<
+  WizardState,
+  | 'setStep'
+  | 'nextStep'
+  | 'prevStep'
+  | 'setGenre'
+  | 'setPerspective'
+  | 'setArtStyle'
+  | 'setSetting'
+  | 'setScale'
+  | 'setControls'
+  | 'setSavingEnabled'
+  | 'setMonetization'
+  | 'setQuestComplexity'
+  | 'setDialogueDepth'
+  | 'setLoreId'
+  | 'setDescription'
+  | 'reset'
+>;
+
+const initialState: Omit<WizardState, keyof WizardSetters> = {
   currentStep: 1,
   genre: null,
   perspective: null,
@@ -50,7 +70,7 @@ const initialState: Omit<WizardState, keyof Pick<WizardState, 'setStep' | 'nextS
 };
 
 export const useWizardStore = create<WizardState>((set, get) => ({
-  ...initialState as WizardState,
+  ...initialState,
   
   setStep: (step) => set({ currentStep: step }),
   
@@ -81,5 +101,5 @@ export const useWizardStore = create<WizardState>((set, get) => ({
   setLoreId: (loreId) => set({ loreId }),
   setDescription: (description) => set({ description }),
   
-  reset: () => set(initialState as WizardState),
+  reset: () => set(initialState),
 }));
