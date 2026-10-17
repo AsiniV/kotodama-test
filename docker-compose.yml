@@ -5,8 +5,6 @@
 # All Services: PostgreSQL + PGVector, MinIO, Ollama, FastAPI, Godot, Next.js, Nginx, Redis
 # =============================================================================
 
-version: '3.8'
-
 services:
   # ---------------------------------------------------------------------------
   # PostgreSQL 16 with PGVector extension for Lore RAG
@@ -52,7 +50,7 @@ services:
     networks:
       - kotodama-network
     healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:9000/minio/health/live"]
+      test: ["CMD-SHELL", "curl -f http://localhost:9000/minio/health/live || exit 1"]
       interval: 10s
       timeout: 5s
       retries: 5
@@ -73,7 +71,7 @@ services:
     networks:
       - kotodama-network
     healthcheck:
-      test: ["CMD", "redis-cli", "ping"]
+      test: ["CMD-SHELL", "redis-cli ping | grep -q PONG"]
       interval: 10s
       timeout: 5s
       retries: 5
@@ -89,22 +87,25 @@ services:
       - "11434:11434"
     volumes:
       - ollama_data:/root/.ollama
+      # Bind mount локального каталога моделей Ollama (чтобы переиспользовать уже скачанные модели)
+      # Windows + Docker Desktop: раскомментируйте строку ниже и укажите свой путь, например:
+      # - C:/Users/orlov/.ollama:/root/.ollama
+    environment:
+      # AMD RDNA 3.5 (Vulkan) конфигурация для WSL2 / Docker Desktop
+      AMD_VULKAN_ICD: RADV
+      HSA_OVERRIDE_GFX_VERSION: "11.0.0"
+      CUDA_VISIBLE_DEVICES: "-1"
+      HIP_VISIBLE_DEVICES: "-1"
     networks:
       - kotodama-network
     healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:11434/api/tags"]
+      test: ["CMD-SHELL", "curl -f http://localhost:11434/api/tags || exit 1"]
       interval: 30s
       timeout: 10s
       retries: 5
       start_period: 60s
-    deploy:
-      resources:
-        reservations:
-          devices:
-            - driver: nvidia
-              count: all
-              capabilities: [gpu]
-    # Note: Remove gpu section if no NVIDIA GPU available; Ollama will use CPU fallback
+    # Примечание: блок deploy.resources.reservations.devices (nvidia) удалён —
+    # он ломает запуск на AMD/CPU-хостах. Для NVIDIA GPU добавьте его обратно при необходимости.
 
   # ---------------------------------------------------------------------------
   # FastAPI Backend Service
@@ -148,7 +149,7 @@ services:
     networks:
       - kotodama-network
     healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:8000/api/v1/health"]
+      test: ["CMD-SHELL", "curl -f http://localhost:8000/api/v1/health || exit 1"]
       interval: 30s
       timeout: 10s
       retries: 3
@@ -188,7 +189,7 @@ services:
     networks:
       - kotodama-network
     healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:3000"]
+      test: ["CMD-SHELL", "curl -f http://localhost:3000 || exit 1"]
       interval: 30s
       timeout: 10s
       retries: 3
@@ -214,7 +215,7 @@ services:
     networks:
       - kotodama-network
     healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:80/health"]
+      test: ["CMD-SHELL", "curl -f http://localhost:80/health || exit 1"]
       interval: 30s
       timeout: 10s
       retries: 3

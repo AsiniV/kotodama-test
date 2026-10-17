@@ -5,7 +5,7 @@ CREATE EXTENSION IF NOT EXISTS vector;
 
 -- Create enum types for better type safety
 CREATE TYPE user_role AS ENUM ('user', 'admin', 'studio');
-CREATE_TYPE project_status AS ENUM ('draft', 'generating', 'ready', 'failed', 'archived');
+CREATE TYPE project_status AS ENUM ('draft', 'generating', 'ready', 'failed', 'archived');
 CREATE TYPE generation_step AS ENUM (
     'designer', 'architect', 'quest_designer', 'dialogue_writer',
     'art_director', 'coder', 'qa', 'playtest', 'commit'
