@@ -4,7 +4,7 @@ All data exchanged between agents uses these validated models.
 """
 
 from pydantic import BaseModel, Field
-from typing import Literal, Optional
+from typing import List, Literal, Optional
 from datetime import datetime
 
 
@@ -43,6 +43,44 @@ class GameDesignDocument(BaseModel):
     module_dependencies: list[str]  # Required modules
     estimated_modules: list[str]  # Modules to generate
     lore_context: Optional[str] = None
+
+
+# ============================================================================
+# Audio Pipeline Schemas (ЭТАП 2 — Sound Generation)
+# ============================================================================
+
+class AudioRequest(BaseModel):
+    """Структурированный запрос на генерацию звука от Showrunner/Game IR.
+
+    Добавь поле в корневую схему GameIR / GameDesignDocument:
+        audio_requests: List[AudioRequest] = Field(default_factory=list)
+    """
+    id: str = Field(..., description="Уникальный ID, напр. 'bgm_main_theme' или 'sfx_footstep'")
+    type: Literal["bgm", "sfx"]
+    description: str = Field(..., description="Смысловое описание: 'тревожный синтвейв' или 'шаги по дереву'")
+    duration_sec: int = Field(default=30, ge=5, le=120)
+    loop: bool = Field(default=False, description="Зацикливать ли звук (для BGM)")
+
+
+class EntityRequest(BaseModel):
+    """Сущность игрового мира (NPC, объект, враг) для Godot-интегратора.
+
+    Интегратор превращает каждую сущность в узел Sprite2D внутри main_level.tscn,
+    подставляя спрайт res://assets/sprites/<id>.png (если он существует) и
+    генерируя per-entity .gd скрипт со специфичной логикой.
+    """
+    id: str = Field(..., description="Уникальный ID, напр. 'npc_blacksmith'")
+    name: Optional[str] = Field(default=None, description="Отображаемое имя")
+    type: Literal["player", "npc", "enemy", "item", "hazard", "decoration"] = "npc"
+    description: str = Field(default="", description="Смысловое описание сущности")
+    sprite: Optional[str] = Field(default=None, description="Имя спрайта без расширения (по умолчанию = id)")
+    position_x: Optional[float] = Field(default=None, description="X-координата на уровне")
+    position_y: Optional[float] = Field(default=None, description="Y-координата на уровне")
+    dialogue_id: Optional[str] = Field(default=None, description="ID диалогового дерева, привязанного к сущности")
+    sfx_ids: List[str] = Field(
+        default_factory=list,
+        description="ID звуковых эффектов из AudioRequest (type='sfx'), которые издаёт эта сущность",
+    )
 
 
 # ============================================================================
@@ -302,6 +340,24 @@ class LocalizationOutput(BaseModel):
     entries: list[LocalizationEntry]
     localization_files: list[LocalizationFile]
     missing_keys: list[str]  # tr() calls without keys
+
+
+# ============================================================================
+# Game IR — корневая схема (объявлена после всех зависимых схем)
+# ============================================================================
+
+class GameIR(BaseModel):
+    """Game Intermediate Representation — корневая схема игры для пайплайна.
+
+    Агрегирует GDD, структурированные запросы на аудио, сущности мира,
+    квесты и диалоги — всё, что нужно Godot-интегратору для сборки проекта.
+    """
+    design_document: Optional[GameDesignDocument] = None
+    audio_requests: List[AudioRequest] = Field(default_factory=list)
+    entities: List[EntityRequest] = Field(default_factory=list)
+    quests: List[QuestGraph] = Field(default_factory=list)
+    dialogues: List[DialogueTree] = Field(default_factory=list)
+    level_layout: Optional[LevelLayout] = None
 
 
 # ============================================================================

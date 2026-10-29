@@ -30,10 +30,10 @@ help:
 	@echo "  lint                 Run linters (black, ruff, mypy)"
 	@echo "  migrate              Run database migrations"
 	@echo "  docker-up            Start all Docker services"
-	@echo "  docker-up-infra      Start infrastructure only (postgres, minio, redis, ollama)"
+	@echo "  docker-up-infra      Start infrastructure only (postgres, minio, redis)"
 	@echo "  docker-down          Stop all Docker services"
 	@echo "  logs                 View service logs"
-	@echo "  ollama-pull          Pull LLM models into Ollama container"
+	@echo "  ollama-pull          Pull LLM models into native WSL2 Ollama (outside Docker)"
 	@echo "  minio-create-buckets Create MinIO buckets (kotodama-assets, kotodama-builds)"
 
 # -----------------------------------------------------------------------------
@@ -60,7 +60,7 @@ setup:
 # -----------------------------------------------------------------------------
 dev:
 	@echo "Starting development environment..."
-	docker compose up -d postgres minio redis ollama
+	docker compose up -d postgres minio redis
 	@echo "Waiting for services..."
 	sleep 5
 	uvicorn backend.main:app --reload --host 0.0.0.0 --port 8000
@@ -136,7 +136,7 @@ docker-up:
 	docker compose up -d
 
 docker-up-infra:
-	docker compose up -d postgres minio redis ollama
+	docker compose up -d postgres minio redis
 
 docker-down:
 	docker compose down
@@ -148,12 +148,12 @@ logs:
 # AI MODELS / STORAGE
 # -----------------------------------------------------------------------------
 ollama-pull:
-	@echo "Pulling models into Ollama container..."
-	docker exec kotodama-ollama ollama pull nomic-embed-text
-	docker exec kotodama-ollama ollama pull qwen3-coder:30b || echo "Skip qwen3-coder:30b (pull manually if needed)"
-	docker exec kotodama-ollama ollama pull qwen3.6:35b || echo "Skip qwen3.6:35b (pull manually if needed)"
-	@echo "Local models inside the container (bind mount C:/Users/<user>/.ollama shows already downloaded models):"
-	docker exec kotodama-ollama ollama list
+	@echo "Pulling models into native WSL2 Ollama (LLM runs outside Docker for AMD ROCm GPU access)..."
+	ollama pull nomic-embed-text
+	ollama pull qwen2.5-coder:32b
+	ollama pull qwen2.5:32b
+	@echo "Locally available models:"
+	ollama list
 
 minio-create-buckets:
 	@echo "Creating MinIO buckets..."

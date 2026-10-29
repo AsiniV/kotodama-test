@@ -70,6 +70,8 @@ CREATE TABLE IF NOT EXISTS projects (
     dialogue_depth VARCHAR(50) DEFAULT 'none',
     lore_collection_id UUID REFERENCES lore_collections(id),
     wizard_config JSONB, -- Full wizard configuration
+    game_ir_data JSONB, -- GameIR (backend.schemas.agent_schemas.GameIR) for Godot integrator
+    godot_project_path VARCHAR(500), -- Assembled Godot project path
     git_commit_hash VARCHAR(40), -- Current stable commit
     created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
     updated_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP

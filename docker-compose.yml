@@ -78,34 +78,40 @@ services:
 
   # ---------------------------------------------------------------------------
   # Ollama - Local LLM Inference
+  # NOTE (ЭТАП 1.3): Закомментировано намеренно.
+  # Docker Desktop на Windows плохо пробрасывает AMD iGPU (gfx1151) в контейнеры,
+  # что приводит к тихому откату Ollama на CPU (генерация висит часами) или падению.
+  # Ollama запускается НАТИВНО в WSL2 (где работает ROCm), а контейнеры обращаются
+  # к нему через хост: OLLAMA_BASE_URL=http://host.docker.internal:11434 (см. .env).
+  # Команды для нативного режима: `make ollama-pull` и `ollama serve` внутри Ubuntu (WSL2).
   # ---------------------------------------------------------------------------
-  ollama:
-    image: ollama/ollama:latest
-    container_name: kotodama-ollama
-    restart: unless-stopped
-    ports:
-      - "11434:11434"
-    volumes:
-      - ollama_data:/root/.ollama
-      # Bind mount локального каталога моделей Ollama (чтобы переиспользовать уже скачанные модели)
-      # Windows + Docker Desktop: раскомментируйте строку ниже и укажите свой путь, например:
-      # - C:/Users/orlov/.ollama:/root/.ollama
-    environment:
-      # AMD RDNA 3.5 (Vulkan) конфигурация для WSL2 / Docker Desktop
-      AMD_VULKAN_ICD: RADV
-      HSA_OVERRIDE_GFX_VERSION: "11.0.0"
-      CUDA_VISIBLE_DEVICES: "-1"
-      HIP_VISIBLE_DEVICES: "-1"
-    networks:
-      - kotodama-network
-    healthcheck:
-      test: ["CMD-SHELL", "curl -f http://localhost:11434/api/tags || exit 1"]
-      interval: 30s
-      timeout: 10s
-      retries: 5
-      start_period: 60s
-    # Примечание: блок deploy.resources.reservations.devices (nvidia) удалён —
-    # он ломает запуск на AMD/CPU-хостах. Для NVIDIA GPU добавьте его обратно при необходимости.
+  # ollama:
+  #   image: ollama/ollama:latest
+  #   container_name: kotodama-ollama
+  #   restart: unless-stopped
+  #   ports:
+  #     - "11434:11434"
+  #   volumes:
+  #     - ollama_data:/root/.ollama
+  #     # Bind mount локального каталога моделей Ollama (чтобы переиспользовать уже скачанные модели)
+  #     # Windows + Docker Desktop: раскомментируйте строку ниже и укажите свой путь, например:
+  #     # - C:/Users/orlov/.ollama:/root/.ollama
+  #   environment:
+  #     # AMD RDNA 3.5 (Vulkan) конфигурация для WSL2 / Docker Desktop
+  #     AMD_VULKAN_ICD: RADV
+  #     HSA_OVERRIDE_GFX_VERSION: "11.0.0"
+  #     CUDA_VISIBLE_DEVICES: "-1"
+  #     HIP_VISIBLE_DEVICES: "-1"
+  #   networks:
+  #     - kotodama-network
+  #   healthcheck:
+  #     test: ["CMD-SHELL", "curl -f http://localhost:11434/api/tags || exit 1"]
+  #     interval: 30s
+  #     timeout: 10s
+  #     retries: 5
+  #     start_period: 60s
+  #   # Примечание: блок deploy.resources.reservations.devices (nvidia) удалён —
+  #   # он ломает запуск на AMD/CPU-хостах. Для NVIDIA GPU добавьте его обратно при необходимости.
 
   # ---------------------------------------------------------------------------
   # FastAPI Backend Service
@@ -125,7 +131,10 @@ services:
       MINIO_BUCKET_ASSETS: kotodama-assets
       MINIO_BUCKET_BUILDS: kotodama-builds
       MINIO_SECURE: "false"
-      OLLAMA_BASE_URL: http://ollama:11434
+      OLLAMA_BASE_URL: ${OLLAMA_BASE_URL:-http://host.docker.internal:11434}
+      LLM_CODE_MODEL: ${LLM_CODE_MODEL:-qwen2.5-coder:32b}
+      LLM_DESIGN_MODEL: ${LLM_DESIGN_MODEL:-qwen2.5:32b}
+      LLM_EMBEDDING_MODEL: ${LLM_EMBEDDING_MODEL:-nomic-embed-text}
       LOG_LEVEL: INFO
       DEBUG: "true"
       SECRET_KEY: ${SECRET_KEY:-kotodama_dev_secret_key_change_in_production}
@@ -144,10 +153,13 @@ services:
         condition: service_healthy
       redis:
         condition: service_healthy
-      ollama:
-        condition: service_healthy
+      # ollama удалён — LLM работает нативно в WSL2 (см. ЭТАП 1.3),
+      # контейнер достучится до него через host.docker.internal:11434
     networks:
       - kotodama-network
+    extra_hosts:
+      # Для Linux-хостов (и старых Docker Desktop) явная привязка имени хоста
+      - "host.docker.internal:host-gateway"
     healthcheck:
       test: ["CMD-SHELL", "curl -f http://localhost:8000/api/v1/health || exit 1"]
       interval: 30s
@@ -227,8 +239,9 @@ volumes:
     driver: local
   redis_data:
     driver: local
-  ollama_data:
-    driver: local
+  # ollama_data больше не используется — Ollama работает нативно в WSL2 (ЭТАП 1.3)
+  # ollama_data:
+  #   driver: local
   workspace_data:
     driver: local
   godot_cache:
