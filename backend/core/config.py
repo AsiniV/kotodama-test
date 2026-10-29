@@ -27,22 +27,22 @@ class Settings(BaseSettings):
 
     # Database
     database_url: str = (
-        "postgresql+asyncpg://kotodama:kotodama_secret_k8s_key_2026@localhost:5432/kotodama"
+        "postgresql+asyncpg://kotodama:kotodama_secret_k8s_key_2026@postgres:5432/kotodama"
     )
     postgres_user: str = "kotodama"
     postgres_password: str = "kotodama_secret_k8s_key_2026"
     postgres_db: str = "kotodama"
-    postgres_host: str = "localhost"
+    postgres_host: str = "postgres"
     postgres_port: int = 5432
 
     # PGVector for Lore RAG
     pgvector_dimension: int = 768
 
     # Redis
-    redis_url: str = "redis://localhost:6379/0"
+    redis_url: str = "redis://redis:6379/0"
 
     # MinIO
-    minio_endpoint: str = "localhost:9000"
+    minio_endpoint: str = "minio:9000"
     minio_access_key: str = "kotodama_admin"
     minio_secret_key: str = "kotodama_minio_secret_k8s_key_2026"
     minio_bucket_assets: str = "kotodama-assets"
@@ -50,13 +50,14 @@ class Settings(BaseSettings):
     minio_secure: bool = False
 
     # Ollama / LLM (local inference)
-    ollama_base_url: str = "http://localhost:11434"
+    # Ollama работает нативно в WSL2; из контейнеров доступ через host.docker.internal
+    ollama_base_url: str = "http://host.docker.internal:11434"
     ollama_code_model: str = Field(
-        default="qwen3-coder:30b",
+        default="qwen2.5-coder:32b",
         validation_alias=AliasChoices("ollama_code_model", "LLM_CODE_MODEL"),
     )
     ollama_design_model: str = Field(
-        default="qwen3.6:35b",
+        default="qwen2.5:32b",
         validation_alias=AliasChoices("ollama_design_model", "LLM_DESIGN_MODEL"),
     )
     ollama_embedding_model: str = Field(
@@ -74,7 +75,7 @@ class Settings(BaseSettings):
     gpu_vendor: str = "AMD"
     gpu_model: str = "Radeon 890M (RDNA 3.5)"
     gpu_vram_gb: int = 64
-    gpu_backend: str = "vulkan"  # Options: "vulkan", "cuda", "rocm", "cpu"
+    gpu_backend: str = "rocm"  # Options: "rocm", "vulkan", "cuda", "cpu"
 
     # Stable Diffusion
     sd_webui_url: str = "http://localhost:7860"

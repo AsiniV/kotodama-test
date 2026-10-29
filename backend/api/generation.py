@@ -1,9 +1,11 @@
 """
 API routes for game generation endpoints.
 """
+import os
+
 from fastapi import APIRouter, HTTPException, BackgroundTasks
 from pydantic import BaseModel
-from typing import Optional
+from typing import List, Optional
 import uuid
 
 from backend.services.orchestration import get_orchestrator
@@ -12,6 +14,7 @@ from backend.services.billing_service import get_billing_service
 from backend.schemas.api_schemas import (
     GenerationResponse, ProjectStatusResponse,
 )
+from backend.schemas.agent_schemas import AudioRequest
 
 router = APIRouter()
 
@@ -122,6 +125,51 @@ async def start_generation(
         raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Failed to start generation: {str(e)}")
+
+
+@router.post("/generate-audio")
+async def trigger_audio_generation(
+    game_id: str,
+    audio_requests: List[AudioRequest],
+    background_tasks: BackgroundTasks,
+):
+    """ЭТАП 2.4: запуск локальной генерации звука (MusicGen / AudioLDM 2).
+
+    Генерация занимает 10-40 секунд на трек, поэтому HTTP-ответ не блокируется:
+    задачи ставятся в BackgroundTasks и выполняются после возврата ответа.
+    """
+    workspace_path = f"/app/workspace/{game_id}/assets/audio"
+    os.makedirs(workspace_path, exist_ok=True)
+
+    try:
+        from backend.services.audio_generator import get_audio_engine
+
+        engine = get_audio_engine()
+    except RuntimeError as e:
+        raise HTTPException(status_code=503, detail=str(e))
+
+    for req in audio_requests:
+        background_tasks.add_task(
+            _process_audio_task,
+            req=req,
+            engine=engine,
+            workspace_path=workspace_path,
+            game_id=game_id,
+        )
+
+    return {
+        "status": "queued",
+        "message": "Audio generation started",
+        "queued": len(audio_requests),
+        "workspace_path": workspace_path,
+    }
+
+
+async def _process_audio_task(req: AudioRequest, engine, workspace_path: str, game_id: str):
+    """Обёртка над backend.services.audio_generator.process_audio_task."""
+    from backend.services.audio_generator import process_audio_task
+
+    return await process_audio_task(req, engine, workspace_path, game_id)
 
 
 @router.get("/status/{project_id}", response_model=ProjectStatusResponse)

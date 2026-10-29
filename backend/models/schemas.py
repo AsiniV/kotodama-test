@@ -48,8 +48,10 @@ class Project(Base):
     quest_complexity = Column(String(50), default="none")
     dialogue_depth = Column(String(50), default="none")
     lore_collection_id = Column(Integer, ForeignKey("lore_collections.id"))
-    status = Column(String(50), default="draft")  # draft, generating, ready, failed
+    status = Column(String(50), default="draft")  # draft, generating, ready, ready_for_export, failed
     workspace_path = Column(String(500))
+    game_ir_data = Column(JSON)  # GameIR (backend.schemas.agent_schemas.GameIR) — для Godot-интегратора
+    godot_project_path = Column(String(500))  # путь к собранному проекту Godot
     git_commit_hash = Column(String(64))
     stability_score = Column(Float)
     created_at = Column(DateTime(timezone=True), server_default=func.now())
