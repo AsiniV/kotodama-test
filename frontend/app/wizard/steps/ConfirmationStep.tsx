@@ -1,7 +1,7 @@
 'use client';
 
 import { useWizardStore } from '@/store/wizardStore';
-import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
+import { CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
 import { CheckCircle2, AlertTriangle, Loader2 } from 'lucide-react';
@@ -12,7 +12,7 @@ export function ConfirmationStep() {
   const { 
     genre, perspective, artStyle, setting, scale, controls,
     savingEnabled, monetization, questComplexity, dialogueDepth,
-    loreId, description, reset
+    loreId, description
   } = useWizardStore();
 
   const [isGenerating, setIsGenerating] = useState(false);
@@ -47,18 +47,19 @@ export function ConfirmationStep() {
 
     try {
       const wizardInput: WizardInput = {
-        genre: genre!,
-        perspective: perspective!,
-        art_style: artStyle!,
-        setting: setting!,
-        scale: scale!,
-        controls: controls!,
-        saving_enabled: savingEnabled,
-        monetization: monetization!,
+        genre,
+        perspective,
+        art_style: artStyle,
+        setting: setting ?? 'fantasy',
+        scale: scale ?? 'small',
+        controls: { scheme: controls ?? 'keyboard' },
+        has_saving: savingEnabled,
+        monetization: monetization ?? 'none',
         quest_complexity: questComplexity,
         dialogue_depth: dialogueDepth,
-        lore_id: loreId,
-        description: description,
+        lore_collection_id: null, // в мастере выбираются шаблоны лора (строковые id)
+        text_description: description,
+        project_name: `Kotodama Game (${genre})`,
       };
 
       const result = await api.startGeneration(wizardInput);

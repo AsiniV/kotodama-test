@@ -1,7 +1,7 @@
 'use client';
 
-import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
-import { AlertTriangle, Clock, Loader2 } from 'lucide-react';
+import { CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
+import { AlertTriangle, Clock } from 'lucide-react';
 
 export function PreviewWarningStep() {
   return (
