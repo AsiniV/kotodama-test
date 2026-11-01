@@ -1,7 +1,7 @@
 'use client';
 
-import { useWizardStore } from '@/store/wizardStore';
-import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
+import { useWizardStore, type WizardState } from '@/store/wizardStore';
+import { CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 
 const depthLevels = [
@@ -32,7 +32,7 @@ export function DialogueDepthStep() {
               className={`w-full h-auto py-4 px-4 flex flex-col items-start gap-2 ${
                 dialogueDepth === level.id ? 'ring-2 ring-primary' : ''
               }`}
-              onClick={() => setDialogueDepth(level.id as any)}
+              onClick={() => setDialogueDepth(level.id as WizardState['dialogueDepth'])}
             >
               <div className="flex items-center justify-between w-full">
                 <span className="font-semibold">{level.name}</span>

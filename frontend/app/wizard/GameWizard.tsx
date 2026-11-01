@@ -2,7 +2,7 @@
 
 import { useWizardStore } from '@/store/wizardStore';
 import { Button } from '@/components/ui/button';
-import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
+import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Progress } from '@/components/ui/progress';
 import { ChevronLeft, ChevronRight, Check } from 'lucide-react';
 import { GenreStep } from './steps/GenreStep';
@@ -38,7 +38,7 @@ const stepTitles = [
 ];
 
 export function GameWizard() {
-  const { currentStep, nextStep, prevStep, setStep } = useWizardStore();
+  const { currentStep, nextStep, prevStep } = useWizardStore();
 
   const renderStep = () => {
     switch (currentStep) {

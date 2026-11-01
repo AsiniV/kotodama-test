@@ -1,7 +1,7 @@
 'use client';
 
-import { useWizardStore } from '@/store/wizardStore';
-import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
+import { useWizardStore, type WizardState } from '@/store/wizardStore';
+import { CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 
 const complexityLevels = [
@@ -32,7 +32,7 @@ export function QuestComplexityStep() {
               className={`w-full h-auto py-4 px-4 flex flex-col items-start gap-2 ${
                 questComplexity === level.id ? 'ring-2 ring-primary' : ''
               }`}
-              onClick={() => setQuestComplexity(level.id as any)}
+              onClick={() => setQuestComplexity(level.id as WizardState['questComplexity'])}
             >
               <div className="flex items-center justify-between w-full">
                 <span className="font-semibold">{level.name}</span>
