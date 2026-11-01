@@ -35,7 +35,7 @@ services:
   # MinIO - S3-compatible Object Storage
   # ---------------------------------------------------------------------------
   minio:
-    image: minio/minio:RELEASE.2024-10-02T17-50-41Z
+    image: minio/minio:latest
     container_name: kotodama-minio
     restart: unless-stopped
     environment:
@@ -144,7 +144,7 @@ services:
     volumes:
       - ./backend:/app/backend:ro
       - ./godot_core:/app/godot_core:ro
-      - workspace_data:/app/workspace
+      - ./workspace:/app/workspace
       - ./configs:/app/configs:ro
     depends_on:
       postgres:
