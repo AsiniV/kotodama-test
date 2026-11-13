@@ -6,7 +6,7 @@ import ast
 import logging
 from typing import List
 from backend.agents.base import BaseAgent
-from backend.schemas.agent_schemas import CoderOutput, QAReport, QAError
+from backend.schemas.agent_schemas import CoderOutput, QAInput, QAReport, QAError
 
 logger = logging.getLogger("kotodama.agents.qa")
 
@@ -15,8 +15,12 @@ class QAAgent(BaseAgent[QAReport]):
     """
     QA & Integrator Agent responsible for validating generated code.
     
-    Input: GeneratedFile list from Coder + optional QuestGraphs/DialogueTrees
+    Contract (Phase 1): execute() takes exactly ONE pydantic input model.
+
+    Input: QAInput(coder_output: CoderOutput, asset_paths, signal_contracts)
     Output: QAReport with pass/fail status and detailed errors
+
+    Deterministic agent: does NOT call the LLM (no structured output needed).
     
     Checks:
     1. GDScript syntax validation (via AST parsing)
@@ -25,6 +29,8 @@ class QAAgent(BaseAgent[QAReport]):
     4. Guard violations (no Core Engine modifications, no dangerous API calls)
     """
     
+    role = "qa"
+
     def __init__(self, model_name: str = "qwen2.5-coder:32b", temperature: float = 0.1):
         super().__init__(model_name=model_name, temperature=temperature)
     
@@ -73,25 +79,33 @@ Return a QAReport with:
 
 Critical errors cause passed=false. Warnings are informational."""
 
-    async def execute(self, input_data: dict) -> QAReport:
+    async def execute(self, input_data: QAInput) -> QAReport:
         """
         Execute the QA agent.
-        
+
         Args:
-            input_data: Dictionary with coder_output, quest_graphs, dialogue_trees, asset_paths
-            
+            input_data: QAInput with the coder output, asset paths and signal contracts
+
         Returns:
             QAReport with validation results
+
+        Raises:
+            TypeError: if input_data is not a QAInput
         """
+        if not isinstance(input_data, QAInput):
+            raise TypeError(
+                f"QAAgent.execute expects QAInput, got {type(input_data).__name__}"
+            )
+
         errors: List[QAError] = []
         warnings: List[str] = []
         files_checked = 0
         signals_verified = 0
-        
-        coder_output = input_data.get('coder_output')
-        asset_paths = input_data.get('asset_paths', [])
-        signal_contracts = input_data.get('signal_contracts', [])
-        
+
+        coder_output = input_data.coder_output
+        asset_paths = input_data.asset_paths
+        signal_contracts = input_data.signal_contracts
+
         # Validate each generated file
         for gen_file in coder_output.files:
             files_checked += 1

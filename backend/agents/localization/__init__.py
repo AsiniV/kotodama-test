@@ -4,7 +4,7 @@ Localization Manager Agent - Extracts text strings, generates localization files
 
 import logging
 from backend.agents.base import BaseAgent
-from backend.schemas.agent_schemas import LocalizationOutput, DialogueTree
+from backend.schemas.agent_schemas import LocalizationInput, LocalizationOutput, DialogueTree
 
 logger = logging.getLogger("kotodama.agents.localization")
 
@@ -19,6 +19,8 @@ class LocalizationManagerAgent(BaseAgent):
     Validates: Every tr() key exists in en.json, no hardcoded strings.
     """
     
+    role = "localization"
+
     def __init__(self, model_name: str = "qwen2.5:32b", temperature: float = 0.1):
         super().__init__(model_name=model_name, temperature=temperature)
     
@@ -51,29 +53,39 @@ Return LocalizationOutput with:
 
 Output MUST be valid JSON matching LocalizationOutput schema."""
 
-    async def execute(self, dialogue_trees: list[DialogueTree], generated_files: list | None = None) -> LocalizationOutput:
+    async def execute(self, input_data: LocalizationInput) -> LocalizationOutput:
         """
         Execute the Localization Manager agent.
-        
+
         Args:
-            dialogue_trees: List of dialogue trees
-            generated_files: Optional list of generated files to scan
-            
+            input_data: LocalizationInput with dialogue trees, quest graphs and
+                generated file paths to scan
+
         Returns:
             LocalizationOutput object
+
+        Raises:
+            TypeError: if input_data is not a LocalizationInput
         """
-        prompt = self._build_prompt(dialogue_trees, generated_files)
+        if not isinstance(input_data, LocalizationInput):
+            raise TypeError(
+                f"LocalizationManagerAgent.execute expects LocalizationInput, got {type(input_data).__name__}"
+            )
+
+        prompt = self._build_prompt(input_data)
         result = await self._call_llm(prompt, LocalizationOutput)
-        
+
         logger.info(f"Extracted {len(result.entries)} localization entries")
         return result
-    
-    def _build_prompt(self, dialogue_trees: list[DialogueTree], generated_files: list | None) -> str:
+
+    def _build_prompt(self, input_data: LocalizationInput) -> str:
         """Build the prompt for the LLM."""
         prompt = f"""Extract localization strings from the following content:
 
-DIALOGUE TREES: {len(dialogue_trees)} trees
-GENERATED FILES: {len(generated_files) if generated_files else 0} files
+DIALOGUE TREES: {len(input_data.dialogue_trees)} trees
+QUEST GRAPHS: {len(input_data.quest_graphs)} quests
+GENERATED FILES: {len(input_data.generated_file_paths)} files
+FILE PATHS: {input_data.generated_file_paths[:20]}
 
 Extract all user-facing strings and generate localization keys.
 Follow all rules in the system prompt."""

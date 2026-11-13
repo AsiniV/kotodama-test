@@ -20,6 +20,8 @@ class CoderAgent(BaseAgent[CoderOutput]):
     CRITICAL: Never modifies Core Engine files. Only creates/updates module files.
     """
     
+    role = "coder"
+
     def __init__(self, model_name: str = "qwen2.5-coder:32b", temperature: float = 0.15):
         super().__init__(model_name=model_name, temperature=temperature)
     

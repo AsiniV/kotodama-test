@@ -55,11 +55,13 @@ class ArtPipelineService:
         logger.info(f"Required slots: {architecture_plan.asset_slots_needed}")
         
         # Step 1: Art Director generates prompts
-        prompts_output = await self.art_director.execute(
+        from backend.schemas.agent_schemas import ArtDirectorInput
+
+        prompts_output = await self.art_director.execute(ArtDirectorInput(
             architecture_plan=architecture_plan,
             lore_context=lore_context,
-            art_style=art_style
-        )
+            art_style=art_style,
+        ))
         
         logger.info(f"Generated {len(prompts_output.prompts)} asset prompts")
         

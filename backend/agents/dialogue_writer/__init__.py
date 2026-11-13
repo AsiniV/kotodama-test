@@ -4,13 +4,19 @@ Dialogue Writer Agent - Generates branching dialogue trees with conditions.
 
 import logging
 from backend.agents.base import BaseAgent
-from backend.schemas.agent_schemas import GameDesignDocument, QuestGraph, DialogueTree
+from backend.schemas.agent_schemas import (
+    GameDesignDocument,
+    QuestGraph,
+    DialogueTree,
+    DialogueTreeList,
+    DialogueWriterInput,
+)
 from backend.validators import create_dialogue_validator, ValidationResult
 
 logger = logging.getLogger("kotodama.agents.dialogue_writer")
 
 
-class DialogueWriterAgent(BaseAgent):
+class DialogueWriterAgent(BaseAgent[DialogueTreeList]):
     """
     Dialogue Writer Agent responsible for generating branching dialogue trees.
     
@@ -20,6 +26,8 @@ class DialogueWriterAgent(BaseAgent):
     Validates: All text_keys exist in localization, no orphan nodes, valid actions.
     """
     
+    role = "dialogue_writer"
+
     def __init__(self, model_name: str = "qwen2.5:32b", temperature: float = 0.6):
         super().__init__(model_name=model_name, temperature=temperature)
         self.validator = None
@@ -49,56 +57,56 @@ NODE STRUCTURE:
 
 Output MUST be valid JSON matching DialogueTree schema."""
 
-    async def execute(self, gdd: GameDesignDocument, quest_graphs: list[QuestGraph], 
-                     lore_context: str | None = None, localization_keys: set[str] = None,
-                     item_registry: set[str] = None, flag_registry: set[str] = None,
-                     quest_registry: set[str] = None) -> list[DialogueTree]:
+    async def execute(self, input_data: DialogueWriterInput) -> DialogueTreeList:
         """
         Execute the Dialogue Writer agent.
-        
+
         Args:
-            gdd: Game Design Document
-            quest_graphs: List of quest graphs
-            lore_context: Optional lore context
-            localization_keys: Set of valid localization keys
-            item_registry: Set of valid item IDs
-            flag_registry: Set of valid flag names
-            quest_registry: Set of valid quest IDs
-            
+            input_data: DialogueWriterInput with GDD, quest graphs, optional lore
+                context and localization/item/flag/quest registries.
+
         Returns:
-            List of validated DialogueTree objects
-            
+            DialogueTreeList of validated DialogueTree objects (empty when
+            dialogue_depth == "none")
+
         Raises:
-            ValueError: If validation fails
+            TypeError: if input_data is not a DialogueWriterInput
+            ValueError: if dialogue validation fails
         """
+        if not isinstance(input_data, DialogueWriterInput):
+            raise TypeError(
+                f"DialogueWriterAgent.execute expects DialogueWriterInput, got {type(input_data).__name__}"
+            )
+
+        gdd = input_data.design_document
         if gdd.dialogue_depth == "none":
-            return []
-        
-        prompt = self._build_prompt(gdd, quest_graphs, lore_context)
-        result = await self._call_llm(prompt, type(list[DialogueTree]))
-        
+            return DialogueTreeList(dialogues=[])
+
+        prompt = self._build_prompt(gdd, input_data.quest_graphs, input_data.lore_context)
+        result = await self._call_llm(prompt, DialogueTreeList)
+
         # Validate generated dialogues
         validator = create_dialogue_validator(
-            localization_keys=localization_keys,
-            item_registry=item_registry,
-            flag_registry=flag_registry,
-            quest_registry=quest_registry
+            localization_keys=set(input_data.localization_keys),
+            item_registry=set(input_data.item_registry),
+            flag_registry=set(input_data.flag_registry),
+            quest_registry=set(input_data.quest_registry),
         )
-        
-        validation_result = validator.validate_multiple_dialogues(result)
-        
+
+        validation_result = validator.validate_multiple_dialogues(result.dialogues)
+
         if not validation_result.passed:
             error_msg = f"Dialogue validation failed: {'; '.join(validation_result.errors)}"
             logger.error(error_msg)
             raise ValueError(error_msg)
-        
+
         if validation_result.warnings:
             for warning in validation_result.warnings:
                 logger.warning(f"Dialogue warning: {warning}")
-        
-        logger.info(f"Generated and validated {len(result)} dialogue trees for {gdd.title}")
+
+        logger.info(f"Generated and validated {len(result.dialogues)} dialogue trees for {gdd.title}")
         return result
-    
+
     def _build_prompt(self, gdd: GameDesignDocument, quest_graphs: list[QuestGraph], lore_context: str | None) -> str:
         """Build the prompt for the LLM."""
         prompt = f"""Generate dialogue trees based on the following GDD:

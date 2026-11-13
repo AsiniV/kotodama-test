@@ -62,22 +62,9 @@ class AssetType(str, Enum):
 
 # ============== Wizard Input Schemas ==============
 
-class WizardInput(BaseModel):
-    """Complete wizard input for game generation."""
-
-    genre: str = Field(..., description="Game genre")
-    perspective: str = Field(..., description="Camera perspective")
-    art_style: str = Field(..., description="Visual art style")
-    setting: str = Field(..., description="World setting/theme")
-    scale: str = Field(..., description="Game scale (small/medium/large)")
-    controls: dict = Field(default_factory=dict, description="Control scheme")
-    has_saving: bool = Field(default=False, description="Enable save/load system")
-    monetization: Optional[str] = Field(None, description="Monetization model")
-    quest_complexity: QuestComplexity = Field(default=QuestComplexity.NONE)
-    dialogue_depth: DialogueDepth = Field(default=DialogueDepth.NONE)
-    lore_collection_id: Optional[int] = Field(None, description="Selected lore collection")
-    text_description: str = Field(..., description="Additional text description")
-    project_name: str = Field(..., min_length=1, max_length=255)
+# Single source of truth: WizardInput is defined in backend.schemas.agent_schemas
+# and re-exported here so API code can keep importing it from this module.
+from backend.schemas.agent_schemas import WizardInput  # noqa: E402,F401 (re-export)
 
 
 class RemixInput(BaseModel):
