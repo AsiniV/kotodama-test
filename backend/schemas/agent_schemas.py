@@ -1,10 +1,13 @@
 """
 Pydantic schemas for agent inputs and outputs.
 All data exchanged between agents uses these validated models.
+
+Single source of truth: ``backend/schemas/api_schemas.py`` re-exports
+``WizardInput`` (and friends) from this module.
 """
 
-from pydantic import BaseModel, Field
-from typing import List, Literal, Optional
+from pydantic import BaseModel, ConfigDict, Field
+from typing import Any, List, Literal, Optional
 from datetime import datetime
 
 
@@ -13,20 +16,26 @@ from datetime import datetime
 # ============================================================================
 
 class WizardInput(BaseModel):
-    """Input from the 14-step wizard."""
+    """Input from the 14-step wizard (single source of truth for API + agents)."""
     genre: str
     perspective: str
     art_style: str
     setting: str
     scale: str
-    controls: dict
+    controls: dict = Field(default_factory=dict)
     has_saving: bool = False
-    monetization: str
+    monetization: str = "none"
     quest_complexity: Literal["none", "simple", "branching", "epic"] = "none"
     dialogue_depth: Literal["none", "linear", "branching", "full_rpg"] = "none"
     lore_collection_id: Optional[int] = None
     text_description: str
     project_name: str
+
+
+class DesignerInput(BaseModel):
+    """Single input model for the Game Designer agent."""
+    wizard_input: WizardInput
+    lore_context: Optional[str] = None
 
 
 class GameDesignDocument(BaseModel):
@@ -42,6 +51,8 @@ class GameDesignDocument(BaseModel):
     unique_selling_points: list[str]
     module_dependencies: list[str]  # Required modules
     estimated_modules: list[str]  # Modules to generate
+    quest_complexity: Literal["none", "simple", "branching", "epic"] = "none"
+    dialogue_depth: Literal["none", "linear", "branching", "full_rpg"] = "none"
     lore_context: Optional[str] = None
 
 
@@ -97,6 +108,11 @@ class ArchitecturePlan(BaseModel):
     save_system_required: bool = False
 
 
+class ArchitectInput(BaseModel):
+    """Single input model for the Architect agent."""
+    design_document: GameDesignDocument
+
+
 # ============================================================================
 # Quest Designer Agent Schemas
 # ============================================================================
@@ -121,6 +137,21 @@ class QuestGraph(BaseModel):
     dependencies: list[str]  # Other quest IDs this depends on
     npcs_involved: list[str]
     items_required: list[str]
+
+
+class QuestGraphList(BaseModel):
+    """Wrapper model: LLM structured output cannot be a bare list."""
+    quests: list[QuestGraph] = Field(default_factory=list)
+
+
+class QuestDesignerInput(BaseModel):
+    """Single input model for the Quest Designer agent."""
+    design_document: GameDesignDocument
+    architecture_plan: Optional[ArchitecturePlan] = None
+    lore_context: Optional[str] = None
+    item_registry: list[str] = Field(default_factory=list)
+    npc_registry: list[str] = Field(default_factory=list)
+    location_registry: list[str] = Field(default_factory=list)
 
 
 # ============================================================================
@@ -150,6 +181,22 @@ class DialogueTree(BaseModel):
     trigger: str  # What triggers this dialogue
     nodes: list[DialogueNode]
     conditions: dict  # Actions and their effects
+
+
+class DialogueTreeList(BaseModel):
+    """Wrapper model: LLM structured output cannot be a bare list."""
+    dialogues: list[DialogueTree] = Field(default_factory=list)
+
+
+class DialogueWriterInput(BaseModel):
+    """Single input model for the Dialogue Writer agent."""
+    design_document: GameDesignDocument
+    quest_graphs: list[QuestGraph] = Field(default_factory=list)
+    lore_context: Optional[str] = None
+    localization_keys: list[str] = Field(default_factory=list)
+    item_registry: list[str] = Field(default_factory=list)
+    flag_registry: list[str] = Field(default_factory=list)
+    quest_registry: list[str] = Field(default_factory=list)
 
 
 # ============================================================================
@@ -184,6 +231,42 @@ class AssetPromptsOutput(BaseModel):
     """Output from Art Director agent."""
     prompts: list[AssetPrompt]
     assets: list[GeneratedAsset]
+
+
+class ArtDirectorInput(BaseModel):
+    """Single input model for the Art Director agent."""
+    architecture_plan: ArchitecturePlan
+    lore_context: Optional[str] = None
+    art_style: str = "pixel-art"
+
+
+# ============================================================================
+# Prompt Refiner Agent Schemas
+# ============================================================================
+
+class GenerationRecord(BaseModel):
+    """One generation attempt record used by the Prompt Refiner meta-agent."""
+    agent: str = "unknown"
+    success: bool = False
+    error_type: Optional[str] = None
+    error_message: Optional[str] = None
+    details: dict[str, Any] = Field(default_factory=dict)
+
+
+class PromptUpdate(BaseModel):
+    """Updated system prompt for a single agent."""
+    agent_name: str
+    updated_prompt: str
+
+
+class PromptUpdates(BaseModel):
+    """Wrapper model: LLM structured output for prompt updates."""
+    updates: list[PromptUpdate] = Field(default_factory=list)
+
+
+class PromptRefinerInput(BaseModel):
+    """Single input model for the Prompt Refiner agent."""
+    generation_history: list[GenerationRecord] = Field(default_factory=list)
 
 
 # ============================================================================
@@ -233,6 +316,13 @@ class QAReport(BaseModel):
     warnings: list[str]
     files_checked: int
     signals_verified: int
+
+
+class QAInput(BaseModel):
+    """Single input model for the QA agent (deterministic code validation)."""
+    coder_output: CoderOutput
+    asset_paths: list[str] = Field(default_factory=list)
+    signal_contracts: list[dict] = Field(default_factory=list)
 
 
 # ============================================================================
@@ -318,6 +408,13 @@ class LevelLayout(BaseModel):
     validation_passed: bool = False
 
 
+class LevelGeneratorInput(BaseModel):
+    """Single input model for the Level Generator agent."""
+    architecture_plan: ArchitecturePlan
+    max_enemy_density: float = 0.5
+    max_item_density: float = 0.5
+
+
 # ============================================================================
 # Localization Schemas
 # ============================================================================
@@ -340,6 +437,13 @@ class LocalizationOutput(BaseModel):
     entries: list[LocalizationEntry]
     localization_files: list[LocalizationFile]
     missing_keys: list[str]  # tr() calls without keys
+
+
+class LocalizationInput(BaseModel):
+    """Single input model for the Localization Manager agent."""
+    dialogue_trees: list[DialogueTree] = Field(default_factory=list)
+    quest_graphs: list[QuestGraph] = Field(default_factory=list)
+    generated_file_paths: list[str] = Field(default_factory=list)
 
 
 # ============================================================================
