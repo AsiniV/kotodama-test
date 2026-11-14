@@ -8,7 +8,7 @@
 
 .PHONY: help setup dev dev-backend dev-frontend test build deploy backup clean lint migrate \
         docker-up docker-down docker-up-infra logs ollama-pull minio-create-buckets \
-        test-offline smoke-agents test-workspace verify-offline
+        test-offline smoke-agents test-workspace test-orchestration verify-offline
 
 # -----------------------------------------------------------------------------
 # HELP
@@ -37,6 +37,7 @@ help:
 	@echo "  ollama-pull          Pull LLM models into native WSL2 Ollama (outside Docker)"
 	@echo "  minio-create-buckets Create MinIO buckets (kotodama-assets, kotodama-builds)"
 	@echo "  test-workspace       Phase 4 offline workspace paths/git tests"
+	@echo "  test-orchestration   Phase 5 offline orchestrator dry-run tests (stub agents)"
 	@echo "  verify-offline       Full offline verification (tests + smoke + workspace)"
 
 # -----------------------------------------------------------------------------
@@ -105,7 +106,12 @@ test-workspace:
 	@echo "Running offline workspace paths tests (tmp_path + git only)..."
 	python -m pytest tests/test_workspace_paths.py -v -p no:libtmux
 
-verify-offline: test-offline smoke-agents test-workspace
+# Phase 5: orchestrator graph dry-run with stub agents (no GPU/Godot/LLM/network).
+test-orchestration:
+	@echo "Running offline orchestrator dry-run tests (stub agents)..."
+	python -m pytest tests/test_orchestration_dryrun.py -v -p no:libtmux
+
+verify-offline: test-offline smoke-agents test-workspace test-orchestration
 	@echo "Offline verification complete."
 
 # -----------------------------------------------------------------------------
