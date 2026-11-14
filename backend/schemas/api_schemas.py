@@ -64,6 +64,8 @@ class AssetType(str, Enum):
 
 # Single source of truth: WizardInput is defined in backend.schemas.agent_schemas
 # and re-exported here so API code can keep importing it from this module.
+# Canonical shape (Phase 2): controls: dict, text_description: str, plus
+# quest_complexity / dialogue_depth. There must never be a second WizardInput class.
 from backend.schemas.agent_schemas import WizardInput  # noqa: E402,F401 (re-export)
 
 

@@ -4,6 +4,16 @@ All data exchanged between agents uses these validated models.
 
 Single source of truth: ``backend/schemas/api_schemas.py`` re-exports
 ``WizardInput`` (and friends) from this module.
+
+Phase 2 schema contract (verified by tests/test_schema_contracts.py):
+- ``GameDesignDocument`` carries ``quest_complexity`` / ``dialogue_depth``
+  (read by the orchestrator's skip logic and by quest/dialogue agent prompts).
+- ``WizardInput`` is defined exactly once, here; ``controls`` is a dict and the
+  free-text field is named ``text_description`` everywhere.
+- Bare lists are not valid LLM structured-output response models, so list
+  outputs are wrapped in object models: ``QuestGraphList``, ``DialogueTreeList``
+  (and ``PromptUpdates``). Agents pass these wrapper *classes* to
+  ``BaseAgent._call_llm(prompt, response_model)`` — never ``type(list[...])``.
 """
 
 from pydantic import BaseModel, ConfigDict, Field
@@ -16,13 +26,18 @@ from datetime import datetime
 # ============================================================================
 
 class WizardInput(BaseModel):
-    """Input from the 14-step wizard (single source of truth for API + agents)."""
+    """Input from the 14-step wizard (single source of truth for API + agents).
+
+    Canonical shape: ``controls`` is a mapping (action -> key/button) and the
+    free-text description field is named ``text_description`` on every layer
+    (frontend payload, API endpoint, orchestrator state, agents).
+    """
     genre: str
     perspective: str
     art_style: str
     setting: str
     scale: str
-    controls: dict = Field(default_factory=dict)
+    controls: dict[str, str] = Field(default_factory=dict)
     has_saving: bool = False
     monetization: str = "none"
     quest_complexity: Literal["none", "simple", "branching", "epic"] = "none"
@@ -140,7 +155,12 @@ class QuestGraph(BaseModel):
 
 
 class QuestGraphList(BaseModel):
-    """Wrapper model: LLM structured output cannot be a bare list."""
+    """Wrapper model for the Quest Designer's list output.
+
+    Used as the ``response_model`` passed to ``BaseAgent._call_llm`` /
+    ``LLMClient.generate`` (structured-output schemas must be JSON objects,
+    never bare arrays). The orchestrator reads ``.quests`` off this model.
+    """
     quests: list[QuestGraph] = Field(default_factory=list)
 
 
@@ -184,7 +204,12 @@ class DialogueTree(BaseModel):
 
 
 class DialogueTreeList(BaseModel):
-    """Wrapper model: LLM structured output cannot be a bare list."""
+    """Wrapper model for the Dialogue Writer's list output.
+
+    Used as the ``response_model`` passed to ``BaseAgent._call_llm`` /
+    ``LLMClient.generate`` (structured-output schemas must be JSON objects,
+    never bare arrays). The orchestrator reads ``.dialogues`` off this model.
+    """
     dialogues: list[DialogueTree] = Field(default_factory=list)
 
 
@@ -260,7 +285,12 @@ class PromptUpdate(BaseModel):
 
 
 class PromptUpdates(BaseModel):
-    """Wrapper model: LLM structured output for prompt updates."""
+    """Wrapper model for the Prompt Refiner's list output.
+
+    Used as the ``response_model`` passed to ``BaseAgent._call_llm`` /
+    ``LLMClient.generate`` (structured-output schemas must be JSON objects,
+    never bare arrays).
+    """
     updates: list[PromptUpdate] = Field(default_factory=list)
 
 
