@@ -15,6 +15,7 @@ fakes. These tests assert the Phase-5 invariants:
 from __future__ import annotations
 
 import inspect
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
@@ -134,6 +135,7 @@ class FakeArtPipeline:
             used_in=["module_player"],
             prompt_used=prompt.prompt,
             provider="local",
+            generated_at=datetime.now(timezone.utc),
         )
         return AssetPromptsOutput(prompts=[prompt], assets=[asset])
 
@@ -241,7 +243,9 @@ def fake_wm(tmp_path: Path) -> FakeWorkspaceManager:
 def stub_agents() -> dict[str, RecordingAgent]:
     """Happy-path stub agents for every LLM/deterministic agent in the graph."""
     return {
-        "designer": RecordingAgent(make_gdd()),
+        # Quest/dialogue agents only run when the GDD enables them; the
+        # default complexity/depth is "none" (skip), so enable both here.
+        "designer": RecordingAgent(make_gdd(quest_complexity="simple", dialogue_depth="linear")),
         "architect": RecordingAgent(make_plan()),
         "quest_designer": RecordingAgent(QuestGraphList(quests=[])),
         "dialogue_writer": RecordingAgent(DialogueTreeList(dialogues=[])),
@@ -454,7 +458,10 @@ async def test_localization_missing_keys_do_not_trigger_retry(orchestrator, stub
 @pytest.mark.asyncio
 async def test_playtest_failure_retries_then_succeeds_with_asset_restore(orchestrator, stub_agents):
     scores = iter([10.0, 95.0])
-    stub_agents["playtester"].output = lambda: make_playtest_report(score=next(scores), success=False)
+    # success=True with a low stability score routes through the non-critical
+    # retry branch; the first attempt must NOT be marked crashed (that would
+    # short-circuit the router straight to rollback after MAX_ATTEMPTS).
+    stub_agents["playtester"].output = lambda: make_playtest_report(score=next(scores), success=True)
 
     result = await run(orchestrator)
 

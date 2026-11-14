@@ -257,3 +257,50 @@ fix: 11/11 OK offline; full suite: 110 passed.
 4. `Settings.workspace_root` default `/app/workspace` is meaningless on bare
    WSL2 runs without docker-compose; acceptable because compose pins it, but a
    relative default would be friendlier (devex phase).
+
+## Phase 5 — Orchestrator wiring
+
+**What was done:**
+- `backend/services/orchestration.py` rewritten: `GenerationState` gained
+  `asset_prompts`, `generated_assets`, `asset_paths`, `level_layout`, `game_ir`;
+  every node now calls its agent with the Phase-3 single-input pydantic model;
+  `logging` added; explicit error edges (`_failure_router` → `fail`/`rollback`,
+  no cascading `None` into downstream agents); localization moved AFTER playtest
+  and made fully non-blocking; retry path completes the Phase-4 asset round-trip
+  (`preserve_assets` → recode → `restore_assets` → `clear_preserved`, closing
+  Phase-4 adjacent bug #1). Stale `plan.modules` AttributeError (Phase-2 note)
+  fixed via `_module_names(plan)` reading `required_modules`.
+- Tests: `tests/test_orchestration_dryrun.py` (11 tests, fully offline — stub
+  agents + fake workspace/art services, no GPU/Godot/LLM/network): state fields,
+  happy-path traversal with per-agent single-model input assertions,
+  quest/dialogue/level enablement, early-failure → fail without cascade,
+  post-generation failure → rollback, localization non-blocking (exception and
+  missing-keys), bounded retry with preserve/restore/clear ordering, graph-shape
+  check that every production node has an edge to `fail`, source guard against
+  legacy multi-positional calls.
+- Makefile: new `test-orchestration` target (also wired into `verify-offline`
+  and `help`).
+
+**Adjacent bugs noticed (NOT fixed — other phases' scope):**
+1. `backend/api/generation.py` (~lines 67-82) re-implements the Two-Attempt
+   Rule for billing (`should_charge = success or attempt_number >= 2`) by
+   reading `result["attempt_number"]` from the returned state — this duplicates
+   orchestrator policy in the API layer. If the retry semantics change (e.g.
+   MAX_ATTEMPTS, QA-only retries), credits silently diverge. Should be a single
+   shared constant/policy owned by the orchestrator (billing phase).
+2. Incremental updates: `skip_agents` from `IncrementalAnalyzer` is only
+   honored for `art_director` in the orchestrator; quest/dialogue/level/coder/qa
+   nodes ignore it, so "incremental" runs still regenerate everything except
+   art. Full plumbing belongs to the incremental-update phase.
+3. `GameDesignDocument.quest_complexity`/`dialogue_depth` default to `"none"`,
+   so quest_designer/dialogue_writer are skipped unless the designer LLM
+   explicitly sets them — fine, but the wizard flow never surfaces these knobs,
+   meaning most generations will have zero quests/dialogues until the frontend
+   wizard exposes them (frontend/integration phase).
+4. `OrchestratorService.run_generation` returns the raw LangGraph state dict;
+   callers like `api/generation.py` use `.get("attempt_number", 1)` defensively —
+   there is no typed result model yet (API hardening phase).
+5. The empty `backend/agents/playtest/` package directory remains alongside the
+   real `backend/agents/playtester.py`; root-level legacy test scripts
+   (`test_phase8_*.py`, `test_phase9_*.py`) are not collected by pytest config
+   but still clutter the repo (cleanup phase).
