@@ -32,6 +32,7 @@ import backend.schemas.api_schemas as api_schemas
 from backend.agents.dialogue_writer import DialogueWriterAgent
 from backend.agents.prompt_refiner import PromptRefinerAgent
 from backend.agents.quest_designer import QuestDesignerAgent
+from backend.core.config import Settings
 from backend.services.llm_client import LLMClient
 from backend.schemas.agent_schemas import (
     DialogueChoice,
@@ -282,7 +283,8 @@ def test_prompt_updates_parses_raw_llm_json():
 
 def test_llm_client_rejects_non_model_response_types():
     """The historical bug: passing type(list[...]) instead of a wrapper model."""
-    client = LLMClient(settings=agent_schemas, default_max_tokens=10, code_max_tokens=10, max_repair_retries=0)  # type: ignore[arg-type]
+    settings = Settings(llm_backend="ollama")
+    client = LLMClient(settings=settings, default_max_tokens=10, code_max_tokens=10, max_repair_retries=0)
     broken: object = list[QuestGraph]  # what `type(list[...])` produced
     with pytest.raises(TypeError, match="wrapper model"):
         import asyncio
