@@ -15,6 +15,7 @@ inside llm_client is covered separately in tests/test_llm_client.py.
 from __future__ import annotations
 
 import inspect
+import json
 import shutil
 from typing import Any, Callable
 
@@ -156,13 +157,20 @@ DIALOGUE_LIST = DialogueTreeList(
                     id="n1",
                     speaker="elder",
                     text_key="d1_n1",
-                    choices=[DialogueChoice(text_key="d1_n1_c1", next="end")],
-                )
+                    choices=[DialogueChoice(text_key="d1_n1_c1", next="n2")],
+                ),
+                # terminal node: no choices -> "end" (validator treats an empty
+                # choice list as a valid leaf; see backend/validators)
+                DialogueNode(id="n2", speaker="elder", text_key="d1_n2", choices=[]),
             ],
             conditions={},
         )
     ]
 )
+
+# The dialogue validator requires every referenced localization key to exist in
+# the input registry, so the happy-path input must supply them.
+DIALOGUE_LOC_KEYS = ["d1_n1", "d1_n1_c1", "d1_n2"]
 
 ARCH_WITH_LEVEL_PARAMS = ArchitecturePlan(
     scene_tree={"root": "Main"},
@@ -188,13 +196,19 @@ LEVEL_LAYOUT = LevelLayout(
     algorithm="bsp",
     width=100,
     height=100,
-    rooms=[Room(x=0, y=0, width=10, height=10, room_type="start")],
+    # NOTE: LevelLayoutValidator matches start_room/end_room against the set of
+    # room_type values (a quirk documented in PHASE_NOTES.md), so these must be
+    # room types, not ids.
+    rooms=[
+        Room(x=0, y=0, width=10, height=10, room_type="start"),
+        Room(x=50, y=50, width=10, height=10, room_type="end"),
+    ],
     corridors=[Corridor(start=(5, 5), end=(50, 50), width=2)],
     points_of_interest=[],
     enemy_spawn_points=[(7, 7)],
     item_spawn_points=[],
-    start_room="r0",
-    end_room="r0",
+    start_room="start",
+    end_room="end",
 )
 
 LOCALIZATION_OUT = LocalizationOutput(
@@ -252,7 +266,9 @@ async def test_quest_designer_happy_path_uses_wrapper(install_fake_llm):
 
 async def test_dialogue_writer_happy_path_uses_wrapper(install_fake_llm):
     fake = install_fake_llm([DIALOGUE_LIST])
-    out = await DialogueWriterAgent().execute(DialogueWriterInput(design_document=GDD))
+    out = await DialogueWriterAgent().execute(
+        DialogueWriterInput(design_document=GDD, localization_keys=DIALOGUE_LOC_KEYS)
+    )
     assert isinstance(out, DialogueTreeList)
     assert out.dialogues[0].npc_id == "elder"
     assert fake.calls[0]["response_model"] is DialogueTreeList
@@ -323,53 +339,74 @@ async def test_coder_happy_path_code_role_tokens(install_fake_llm):
 # --------------------------------------------------------------------- #
 
 
-class RepairingFakeClient:
-    """Fake client that behaves like LLMClient.generate across a repair cycle.
-
-    First call: emulate the raw reply failing schema validation (raise the
-    ValidationError, exactly as the real client does internally before it
-    feeds the error text back to the model). Second call: return the
-    corrected, validated model instance.
-    """
-
-    def __init__(self, bad_text: str, good_payload: Any):
-        self.bad_text = bad_text
-        self.good_payload = good_payload
-        self.calls: list[dict[str, Any]] = []
-
-    async def generate(self, **kwargs: Any):
-        import json as _json
-
-        from pydantic import BaseModel
-
-        self.calls.append(kwargs)
-        model = kwargs["response_model"]
-        if len(self.calls) == 1:
-            return model.model_validate(_json.loads(self.bad_text))  # raises ValidationError
-        if isinstance(self.good_payload, BaseModel):
-            return self.good_payload
-        return model.model_validate(self.good_payload)
+REPAIR_SAMPLE_PAYLOADS: dict[str, dict[str, Any]] = {
+    "GameDesignDocument": GDD.model_dump(mode="json"),
+    "ArchitecturePlan": ARCH.model_dump(mode="json"),
+    "QuestGraphList": QUEST_LIST.model_dump(mode="json"),
+    "DialogueTreeList": DIALOGUE_LIST.model_dump(mode="json"),
+    "PromptUpdates": {"updates": [{"agent_name": "coder", "updated_prompt": "Type your GDScript."}]},
+    "CoderOutput": CODER_OUT.model_dump(mode="json"),
+}
 
 
+def _repair_payload(model: type[BaseModel]) -> dict[str, Any]:
+    """Return a valid raw dict payload for ``model`` (used by the repair test)."""
+    sample = REPAIR_SAMPLE_PAYLOADS[model.__name__]
+    return model.model_validate(sample).model_dump(mode="json")
+
+
+REPAIR_CASES = [
+    pytest.param(GameDesignerAgent, DesignerInput(wizard_input=WIZARD), GameDesignDocument, id="designer"),
+    pytest.param(ArchitectAgent, ArchitectInput(design_document=GDD), ArchitecturePlan, id="architect"),
+    pytest.param(
+        QuestDesignerAgent,
+        QuestDesignerInput(design_document=GDD, npc_registry=["elder"], item_registry=["lantern"]),
+        QuestGraphList,
+        id="quest_designer",
+    ),
+    pytest.param(
+        DialogueWriterAgent,
+        DialogueWriterInput(design_document=GDD, localization_keys=DIALOGUE_LOC_KEYS),
+        DialogueTreeList,
+        id="dialogue_writer",
+    ),
+    pytest.param(PromptRefinerAgent, PromptRefinerInput(generation_history=[]), PromptUpdates, id="prompt_refiner"),
+    pytest.param(CoderAgent, CoderInput(architecture_plan=ARCH), CoderOutput, id="coder"),
+]
+
+
+@pytest.mark.parametrize("agent_cls,input_model,output_model", REPAIR_CASES)
 async def test_schema_repair_second_attempt_succeeds(
-    monkeypatch: pytest.MonkeyPatch, agent_factory, input_model, output_model, bad_text, good_payload
+    monkeypatch: pytest.MonkeyPatch, agent_cls, input_model, output_model
 ):
+    """First raw LLM reply fails schema validation -> the real LLMClient repair
+    loop feeds the validation error back -> second reply validates.
+
+    Only the transport boundary (_complete) is faked here; generate(), the
+    validate/repair cycle and the agents' execute() run for real. The repair
+    loop itself is also covered against a mocked HTTP transport in
+    tests/test_llm_client.py::test_schema_repair_feeds_error_back.
+    """
     import backend.services.llm_client as llm_client
+    from backend.services.llm_client import LLMClient
 
-    fake = RepairingFakeClient(bad_text, good_payload)
+    good_text = json.dumps(_repair_payload(output_model))
+    scripted = iter(["not json at all {{{", good_text])
+    prompts_seen: list[str] = []
 
-    async def _get(settings=None):
-        return fake
+    async def fake_complete(self, *, messages, model, temperature, max_tokens, schema, schema_name=""):  # noqa: ANN001
+        prompts_seen.append(messages[-1]["content"])
+        return next(scripted)
 
-    monkeypatch.setattr(llm_client, "get_llm_client", _get)
-    with pytest.raises(Exception):
-        # first attempt must fail validation inside the (faked) client...
-        await fake.generate(prompt="p", response_model=output_model, model="m")
-    fake.calls.clear()  # so the agent's own first call is treated as the retry
+    monkeypatch.setattr(LLMClient, "_complete", fake_complete)
+    # the cached shared client is bound to this test's fresh event loop, so it
+    # is rebuilt here with _complete already patched — no cache reset needed.
 
-    out = await agent_factory().execute(input_model)
+    out = await agent_cls().execute(input_model)
     assert isinstance(out, output_model)
-    assert len(fake.calls) >= 1  # agent went through the repaired path
+    # the repair request must have carried the validation-error feedback text
+    assert len(prompts_seen) == 2
+    assert "Validation error" in prompts_seen[1] or "schema" in prompts_seen[1].lower()
 
 
 # --------------------------------------------------------------------- #
