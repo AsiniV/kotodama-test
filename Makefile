@@ -7,7 +7,8 @@
 # =============================================================================
 
 .PHONY: help setup dev dev-backend dev-frontend test build deploy backup clean lint migrate \
-        docker-up docker-down docker-up-infra logs ollama-pull minio-create-buckets
+        docker-up docker-down docker-up-infra logs ollama-pull minio-create-buckets \
+        test-offline smoke-agents verify-offline
 
 # -----------------------------------------------------------------------------
 # HELP
@@ -87,6 +88,18 @@ test-unit:
 
 test-integration:
 	pytest tests/integration/ -v
+
+# Offline verification (Phase 1): no GPU, no LLM server, no network required.
+test-offline:
+	@echo "Running offline unit tests (mocked LLM)..."
+	python -m pytest tests/ -q -p no:libtmux
+
+smoke-agents:
+	@echo "Running offline agent smoke test (mocked LLM transport)..."
+	python scripts/agent_smoke.py
+
+verify-offline: test-offline smoke-agents
+	@echo "Offline verification complete."
 
 # -----------------------------------------------------------------------------
 # BUILD & DEPLOY
