@@ -164,3 +164,47 @@ Both require no GPU, no LLM server, no Docker, no network.
    collected by `pytest tests/` (the offline targets only run `tests/`), but any
    bare `pytest` / IDE "run all tests" invocation collects them and they can fail or
    require live services. Delete or migrate them in the test-hygiene pass.
+
+---
+
+## Phase 3 — Agent contracts: audit & close-out (2026-11-14)
+
+Re-audited every agent package (`backend/agents/*/__init__.py`, plus
+`backend/agents/playtester.py`) against the single-model contract.
+
+**Verified invariants (no changes needed):**
+- All 11 agents' `execute()` take exactly ONE pydantic input model:
+  `DesignerInput`, `ArchitectInput`, `QuestDesignerInput`, `DialogueWriterInput`,
+  `ArtDirectorInput`, `PromptRefinerInput`, `LevelGeneratorInput`,
+  `LocalizationInput`, `CoderInput`, `QAInput`, `PlaytestConfig`. The
+  `test_execute_takes_exactly_one_input_model` parametrized test enforces this.
+- `scripts/agent_smoke.py` runs all 11 agents against a mocked transport; added
+  `tests/test_agent_smoke_script.py` so the smoke script itself is covered by
+  `make test-offline` (subprocess-isolated, skipif-guarded when a real Godot
+  binary is present).
+
+**Fix required to make the DONE criterion true (see §4-style note):**
+On a machine without the DB stack installed, `python scripts/agent_smoke.py`
+failed for 9/11 agents with `ModuleNotFoundError: No module named 'sqlalchemy'`:
+`BaseAgent._call_llm` imports `backend.services.llm_client`, which executes
+`backend/services/__init__.py`, which eagerly imported `billing_service`
+(sqlalchemy + DB models). `backend/services/__init__.py` now uses PEP 562 lazy
+`__getattr__`; all explicit import styles keep working. Smoke result after the
+fix: 11/11 OK offline; full suite: 110 passed.
+
+**Adjacent bugs noticed (NOT fixed — other phases' scope):**
+1. `backend/agents/playtest/__init__.py` is an EMPTY package; nothing imports it
+   (everything uses `backend.agents.playtester`). Confirms PHASE_NOTES §5 item 3 —
+   consolidate during the refactor phase.
+2. Agents hardcode default model names in their `__init__` signatures
+   (e.g. `"qwen2.5:32b"`, `"qwen2.5-coder:32b"`) instead of reading
+   `settings.llm_*_model`; orchestrator phase should inject models from config.
+3. `ArchitectAgent.execute` still accepts a bare `GameDesignDocument` as a
+   compat shim (documented in §1 above); remove once the orchestrator is rewired.
+4. `QAAgent.execute(QAInput)` is fully deterministic (no LLM call) — fine today,
+   but if QA gains LLM checks later, remember it currently bypasses `_call_llm`.
+5. `pytest` ≥9 + the preinstalled `libtmux` plugin conflict (`Marks cannot be
+   applied to fixtures`); the Makefile offline targets already pass
+   `-p no:libtmux`, but a bare `pytest` invocation fails at startup. Consider
+   adding `PYTEST_ADDOPTS` or pinning pytest in requirements-dev during the
+   test-hygiene pass.
