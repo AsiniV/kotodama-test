@@ -139,3 +139,28 @@ make smoke-agents          # python scripts/agent_smoke.py  (prints validated ou
 ```
 
 Both require no GPU, no LLM server, no Docker, no network.
+
+---
+
+## Phase 2 — Schema fixes: adjacent bugs noticed (NOT fixed — other phases' scope)
+
+1. **`orchestration._run_architect` reads a non-existent field**: line ~260 builds the
+   status message with `len(plan.modules)`, but `ArchitecturePlan`
+   (`backend/schemas/agent_schemas.py`) defines `required_modules`, not `modules`.
+   The expression raises `AttributeError` inside the node's try-block, so the
+   architect step is reported as `"Architect failed: 'ArchitecturePlan' object has no attribute 'modules'"`
+   even on successful LLM generation. Fix in the orchestrator phase (use
+   `plan.required_modules`).
+2. **Divergent duplicate models between schema modules**: `QuestStage` exists in both
+   `api_schemas.py` (pattern-validated `type: str`) and `agent_schemas.py`
+   (`type: Literal[...]`), and the two are separate classes with subtly different
+   validation semantics. Same duplication risk applies to other quest/dialogue
+   models. Consolidate to a single source of truth (re-export from `agent_schemas`)
+   during the API-hardening phase; until then, cross-module `model_dump()` round-trips
+   may validate differently depending on which class is imported.
+3. **Legacy root-level test scripts** (`test_phase8_components.py`, `test_phase8_final.py`,
+   `test_phase9_components.py`, `test_phase9_standalone.py` at repo root): stale
+   Phase 8/9-era standalone scripts that predate the current contracts. They are not
+   collected by `pytest tests/` (the offline targets only run `tests/`), but any
+   bare `pytest` / IDE "run all tests" invocation collects them and they can fail or
+   require live services. Delete or migrate them in the test-hygiene pass.
