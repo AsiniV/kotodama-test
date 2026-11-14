@@ -23,10 +23,8 @@ import shutil
 from pathlib import Path
 from typing import Dict, List, Optional
 
-from backend.core.config import get_settings
+from backend.core import paths
 from backend.schemas.agent_schemas import AudioRequest, EntityRequest, GameIR
-
-settings = get_settings()
 
 # Неэкранированные идентификаторы узлов допустимы только из [A-Za-z0-9_],
 # узел не может называться одним из служебных имён базового шаблона.
@@ -52,9 +50,10 @@ class GodotIntegrator:
     def __init__(self, game_id: str, game_ir: GameIR):
         self.game_id = game_id
         self.ir = game_ir
-        self.workspace_root = Path(settings.workspace_root) / game_id
-        self.godot_core_path = self._resolve_godot_core_path()
-        self.output_path = self.workspace_root / "godot_project"
+        # Canonical layout (backend/core/paths.py): {workspace_root}/{game_id}/godot_project
+        self.workspace_root = paths.project_workspace(game_id)
+        self.godot_core_path = paths.template_path()
+        self.output_path = paths.godot_project_path(game_id)
 
         # id AudioRequest -> путь к файлу спрайта/audio внутри проекта (res://...)
         self.sprite_map: Dict[str, str] = {}   # entity sprite stem -> res path
