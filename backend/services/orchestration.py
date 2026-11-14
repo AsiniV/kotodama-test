@@ -42,7 +42,8 @@ from backend.agents.localization import LocalizationManagerAgent
 class GenerationState(TypedDict):
     """State passed through the generation pipeline."""
     messages: Annotated[list, add_messages]
-    wizard_input: dict
+    # Canonical WizardInput (raw dicts are normalized in run_generation).
+    wizard_input: WizardInput
     gdd: GameDesignDocument | None
     architecture_plan: ArchitecturePlan | None
     quest_graphs: list[QuestGraph]
@@ -68,6 +69,15 @@ def _wizard_input_from_dict(wizard_input) -> WizardInput:
         return wizard_input
 
     data = dict(wizard_input or {})
+    # Canonical model: only remap API-specific field names.
+    data.setdefault("project_name", data.get("project_id") or "kotodama-project")
+    if not data.get("text_description"):
+        data["text_description"] = data.get("description", "")
+    try:
+        return WizardInput.model_validate(data)
+    except Exception:
+        pass
+
     mapped = {
         "project_name": data.get("project_name") or data.get("project_id") or "kotodama-project",
         "genre": data.get("genre", ""),
@@ -211,7 +221,8 @@ class OrchestratorService:
         
         initial_state: GenerationState = {
             "messages": [],
-            "wizard_input": wizard_input,
+            # Normalize once so every node sees the canonical validated model.
+            "wizard_input": _wizard_input_from_dict(wizard_input),
             "gdd": None,
             "architecture_plan": None,
             "quest_graphs": [],
@@ -273,9 +284,9 @@ class OrchestratorService:
             
             # Get lore context if available
             lore_context = None
-            if state["wizard_input"].get("lore_collection_id"):
+            if state["wizard_input"].lore_collection_id:
                 lore_context = await self.lore_rag.get_collection_context(
-                    state["wizard_input"]["lore_collection_id"],
+                    state["wizard_input"].lore_collection_id,
                     "dialogue characters NPCs"
                 )
             
@@ -294,16 +305,16 @@ class OrchestratorService:
         try:
             # Get lore context if available
             lore_context = None
-            if state["wizard_input"].get("lore_collection_id"):
+            if getattr(state["wizard_input"], "lore_collection_id", None):
                 lore_context = await self.lore_rag.get_collection_context(
-                    state["wizard_input"]["lore_collection_id"],
+                    state["wizard_input"].lore_collection_id,
                     "art style visual aesthetic"
                 )
             
-            art_style = state["wizard_input"].get("art_style", "pixel-art")
+            art_style = getattr(state["wizard_input"], "art_style", None) or "pixel-art"
             
             # Use Art Pipeline Service to coordinate full asset generation
-            project_id = state["wizard_input"].get("project_name", "unknown_project")
+            project_id = state["wizard_input"].project_name
             asset_output = await self.art_pipeline.generate_project_assets(
                 architecture_plan=state["architecture_plan"],
                 lore_context=lore_context,

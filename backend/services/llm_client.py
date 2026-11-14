@@ -115,13 +115,13 @@ class LLMClient:
 
         self.backend = (backend or s.llm_backend or "").lower()
         if self.backend == "auto":
-            self.backend = "openai" if (s.openai_api_key or s.llm_api_key) else "ollama"
+            self.backend = "openai" if (s.openai_api_key) else "ollama"
         if self.backend not in ("ollama", "openai"):
             raise ValueError(f"Unknown LLM backend: {self.backend!r} (expected 'ollama', 'openai' or 'auto')")
 
         self.ollama_base_url = ollama_base_url or s.ollama_base_url
         self.openai_base_url = (openai_base_url or s.openai_base_url or "").rstrip("/")
-        self.openai_api_key = openai_api_key or s.openai_api_key or s.llm_api_key or ""
+        self.openai_api_key = openai_api_key or s.openai_api_key or ""
 
         self.timeout_seconds = float(timeout_seconds if timeout_seconds is not None else s.llm_timeout_seconds)
         self.max_repair_retries = max(0, int(max_repair_retries))

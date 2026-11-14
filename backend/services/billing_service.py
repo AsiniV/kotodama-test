@@ -70,10 +70,13 @@ class BillingService:
         
         return remaining >= required_credits
     
-    def calculate_generation_cost(self, wizard_input: dict) -> int:
+    def calculate_generation_cost(self, wizard_input) -> int:
         """
         Calculate credit cost for a generation request.
-        
+
+        Accepts either a canonical ``WizardInput`` model or a plain dict with
+        the same field names (legacy callers).
+
         Base costs from config:
         - Simple game: 10 credits
         - Complex game: 25 credits
@@ -85,13 +88,19 @@ class BillingService:
         - Asset generation (per slot): +2 credits each
         """
         base_cost = self.settings.credits_per_simple_game
-        
+
+        # Normalize input: accept WizardInput model or legacy dict
+        if isinstance(wizard_input, WizardInput):
+            wi = wizard_input
+        else:
+            wi = WizardInput.model_validate(dict(wizard_input))
+
         # Determine complexity
-        quest_complexity = wizard_input.get("quest_complexity", "none")
-        dialogue_depth = wizard_input.get("dialogue_depth", "none")
-        has_saving = wizard_input.get("has_saving", False)
-        genre = wizard_input.get("genre", "")
-        scale = wizard_input.get("scale", "small")
+        quest_complexity = wi.quest_complexity
+        dialogue_depth = wi.dialogue_depth
+        has_saving = wi.has_saving
+        genre = wi.genre
+        scale = wi.scale
         
         # Complex genres/scapes increase base cost
         complex_genres = ["rpg", "strategy", "simulation"]
@@ -132,7 +141,7 @@ class BillingService:
             "shooter": 7,  # player, enemy, background, tileset, projectile, hazard, icon
             "default": 5,
         }
-        estimated_assets = asset_estimates.get(genre.lower(), asset_estimates["default"])
+        estimated_assets = asset_estimates.get(wi.genre.lower(), asset_estimates["default"])
         base_cost += estimated_assets * 2  # 2 credits per asset slot
         
         return base_cost
