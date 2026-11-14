@@ -4,13 +4,19 @@ Quest Designer Agent - Generates quests as state machine graphs.
 
 import logging
 from backend.agents.base import BaseAgent
-from backend.schemas.agent_schemas import GameDesignDocument, ArchitecturePlan, QuestGraph
+from backend.schemas.agent_schemas import (
+    GameDesignDocument,
+    ArchitecturePlan,
+    QuestGraph,
+    QuestGraphList,
+    QuestDesignerInput,
+)
 from backend.validators import create_quest_validator, ValidationResult
 
 logger = logging.getLogger("kotodama.agents.quest_designer")
 
 
-class QuestDesignerAgent(BaseAgent):
+class QuestDesignerAgent(BaseAgent[QuestGraphList]):
     """
     Quest Designer Agent responsible for generating quest state machines.
     
@@ -20,6 +26,8 @@ class QuestDesignerAgent(BaseAgent):
     Validates: No circular dependencies, all stages reachable, no impossible conditions.
     """
     
+    role = "quest_designer"
+
     def __init__(self, model_name: str = "qwen2.5:32b", temperature: float = 0.6):
         super().__init__(model_name=model_name, temperature=temperature)
         self.validator = None
@@ -49,53 +57,57 @@ STAGE TYPES:
 
 Output MUST be valid JSON matching QuestGraph schema."""
 
-    async def execute(self, gdd: GameDesignDocument, arch_plan: ArchitecturePlan, 
-                     item_registry: set[str] = None, npc_registry: set[str] = None,
-                     location_registry: set[str] = None) -> list[QuestGraph]:
+    async def execute(self, input_data: QuestDesignerInput) -> QuestGraphList:
         """
         Execute the Quest Designer agent.
-        
+
         Args:
-            gdd: Game Design Document
-            arch_plan: Architecture Plan
-            item_registry: Set of valid item IDs
-            npc_registry: Set of valid NPC IDs
-            location_registry: Set of valid location IDs
-            
+            input_data: QuestDesignerInput with GDD, optional architecture plan,
+                lore context and item/npc/location registries.
+
         Returns:
-            List of validated QuestGraph objects
-            
+            QuestGraphList containing validated QuestGraph objects (empty list
+            when quest_complexity == "none")
+
         Raises:
-            ValueError: If validation fails
+            TypeError: if input_data is not a QuestDesignerInput
+            ValueError: if quest validation fails
         """
+        if not isinstance(input_data, QuestDesignerInput):
+            raise TypeError(
+                f"QuestDesignerAgent.execute expects QuestDesignerInput, got {type(input_data).__name__}"
+            )
+
+        gdd = input_data.design_document
         if gdd.quest_complexity == "none":
-            return []
-        
-        prompt = self._build_prompt(gdd, arch_plan)
-        result = await self._call_llm(prompt, type(list[QuestGraph]))
-        
+            return QuestGraphList(quests=[])
+
+        prompt = self._build_prompt(gdd, input_data.architecture_plan, input_data.lore_context)
+        result = await self._call_llm(prompt, QuestGraphList)
+
         # Validate generated quests
         validator = create_quest_validator(
-            item_registry=item_registry,
-            npc_registry=npc_registry,
-            location_registry=location_registry
+            item_registry=set(input_data.item_registry),
+            npc_registry=set(input_data.npc_registry),
+            location_registry=set(input_data.location_registry),
         )
-        
-        validation_result = validator.validate_multiple_quests(result)
-        
+
+        validation_result = validator.validate_multiple_quests(result.quests)
+
         if not validation_result.passed:
             error_msg = f"Quest validation failed: {'; '.join(validation_result.errors)}"
             logger.error(error_msg)
             raise ValueError(error_msg)
-        
+
         if validation_result.warnings:
             for warning in validation_result.warnings:
                 logger.warning(f"Quest warning: {warning}")
-        
-        logger.info(f"Generated and validated {len(result)} quests for {gdd.title}")
+
+        logger.info(f"Generated and validated {len(result.quests)} quests for {gdd.title}")
         return result
-    
-    def _build_prompt(self, gdd: GameDesignDocument, arch_plan: ArchitecturePlan) -> str:
+
+    def _build_prompt(self, gdd: GameDesignDocument, arch_plan: ArchitecturePlan | None = None,
+                      lore_context: str | None = None) -> str:
         """Build the prompt for the LLM."""
         prompt = f"""Generate quest state machines based on the following GDD:
 
@@ -104,7 +116,7 @@ GENRE: {gdd.genre}
 SETTING: {gdd.setting}
 QUEST COMPLEXITY: {gdd.quest_complexity}
 CORE MECHANICS: {', '.join(gdd.core_mechanics)}
-LORE CONTEXT: {gdd.lore_context or 'None'}
+LORE CONTEXT: {lore_context or gdd.lore_context or 'None'}\nARCHITECTURE MODULES: {', '.join(m.get('id', m.get('name', '?')) for m in arch_plan.required_modules) if arch_plan else 'None'}
 
 Generate quests appropriate for the complexity level.
 Follow all rules in the system prompt."""

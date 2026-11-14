@@ -14,25 +14,10 @@ from backend.services.billing_service import get_billing_service
 from backend.schemas.api_schemas import (
     GenerationResponse, ProjectStatusResponse,
 )
-from backend.schemas.agent_schemas import AudioRequest
+# Canonical WizardInput lives in backend.schemas.agent_schemas (single source).
+from backend.schemas.agent_schemas import AudioRequest, WizardInput
 
 router = APIRouter()
-
-
-class WizardInput(BaseModel):
-    """Wizard input from frontend."""
-    genre: str
-    perspective: str
-    art_style: str
-    setting: str
-    scale: str
-    controls: str
-    saving_enabled: bool
-    monetization: str
-    quest_complexity: str
-    dialogue_depth: str
-    lore_id: Optional[str] = None
-    description: str
 
 
 @router.post("/start", response_model=GenerationResponse)
@@ -51,23 +36,9 @@ async def start_generation(
     try:
         project_id = str(uuid.uuid4())
         user_id = "default_user"  # TODO: Get from auth
-        
-        # Convert wizard input to orchestrator format
-        wizard_input = {
-            "genre": request.genre,
-            "perspective": request.perspective,
-            "art_style": request.art_style,
-            "setting": request.setting,
-            "scale": request.scale,
-            "controls": request.controls,
-            "has_saving": request.saving_enabled,
-            "monetization": request.monetization,
-            "quest_complexity": request.quest_complexity,
-            "dialogue_depth": request.dialogue_depth,
-            "lore_collection_id": request.lore_id,
-            "description": request.description,
-            "project_name": project_id,
-        }
+
+        # Stamp the generated project id onto the canonical model
+        wizard_input = request.model_copy(update={"project_name": project_id})
         
         # Calculate credit cost BEFORE starting generation
         billing_service = get_billing_service()

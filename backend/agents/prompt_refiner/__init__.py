@@ -4,6 +4,7 @@ Prompt Refiner Agent - Meta-agent that analyzes generations and updates system p
 
 import logging
 from backend.agents.base import BaseAgent
+from backend.schemas.agent_schemas import PromptRefinerInput, PromptUpdates
 
 logger = logging.getLogger("kotodama.agents.prompt_refiner")
 
@@ -18,6 +19,8 @@ class PromptRefinerAgent(BaseAgent):
     Analyzes patterns in successful vs failed generations to optimize prompts.
     """
     
+    role = "prompt_refiner"
+
     def __init__(self, model_name: str = "qwen2.5:32b", temperature: float = 0.3):
         super().__init__(model_name=model_name, temperature=temperature)
     
@@ -44,26 +47,37 @@ Only include agents that need prompt updates.
 
 Focus on incremental improvements, not complete rewrites."""
 
-    async def execute(self, generation_history: list[dict]) -> dict[str, str]:
+    async def execute(self, input_data: PromptRefinerInput) -> PromptUpdates:
         """
         Execute the Prompt Refiner agent.
-        
+
         Args:
-            generation_history: List of generation records with success/failure info
-            
+            input_data: PromptRefinerInput with the generation history records.
+
         Returns:
-            Dictionary of agent_name -> updated_prompt
+            PromptUpdates with one PromptUpdate per agent that needs changes
+
+        Raises:
+            TypeError: if input_data is not a PromptRefinerInput
         """
-        prompt = self._build_prompt(generation_history)
-        result = await self._call_llm(prompt, type(dict[str, str]))
-        
-        logger.info(f"Generated updates for {len(result)} agent prompts")
+        if not isinstance(input_data, PromptRefinerInput):
+            raise TypeError(
+                f"PromptRefinerAgent.execute expects PromptRefinerInput, got {type(input_data).__name__}"
+            )
+
+        prompt = self._build_prompt(input_data.generation_history)
+        result = await self._call_llm(prompt, PromptUpdates)
+
+        logger.info(f"Generated updates for {len(result.updates)} agent prompts")
         return result
-    
-    def _build_prompt(self, history: list[dict]) -> str:
-        """Build the prompt for the LLM."""
-        successes = [h for h in history if h.get('success', False)]
-        failures = [h for h in history if not h.get('success', False)]
+
+    def _build_prompt(self, history: list) -> str:
+        """Build the prompt for the LLM (history items are GenerationRecord models or dicts)."""
+        def _is_success(h) -> bool:
+            return getattr(h, "success", None) if not isinstance(h, dict) else h.get("success", False)
+
+        successes = [h for h in history if _is_success(h)]
+        failures = [h for h in history if not _is_success(h)]
         
         prompt = f"""Analyze the following generation history and suggest prompt improvements:
 

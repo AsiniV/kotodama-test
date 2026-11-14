@@ -5,7 +5,7 @@ Art Director Agent - Generates image prompts for Stable Diffusion, manages asset
 import logging
 from typing import List, Tuple
 from backend.agents.base import BaseAgent
-from backend.schemas.agent_schemas import ArchitecturePlan, GeneratedAsset, AssetPromptsOutput
+from backend.schemas.agent_schemas import ArtDirectorInput, ArchitecturePlan, GeneratedAsset, AssetPromptsOutput
 
 logger = logging.getLogger("kotodama.agents.art_director")
 
@@ -20,6 +20,8 @@ class ArtDirectorAgent(BaseAgent):
     CRITICAL: Uses closed vocabulary of 10 asset slots only.
     """
     
+    role = "art_director"
+
     # Closed vocabulary of 10 asset slots (per spec Section 3.4)
     VALID_SLOTS = ["player", "enemy", "background", "ui_button", "tileset", "item", "npc", "projectile", "hazard", "icon"]
     
@@ -56,26 +58,33 @@ For each asset, generate complete metadata including:
 
 Output MUST be valid JSON matching AssetPromptsOutput schema."""
 
-    async def execute(self, architecture_plan: ArchitecturePlan, lore_context: str | None = None, art_style: str = "pixel-art") -> AssetPromptsOutput:
+    async def execute(self, input_data: ArtDirectorInput) -> AssetPromptsOutput:
         """
         Execute the Art Director agent.
-        
+
         Args:
-            architecture_plan: Architecture plan with required asset slots
-            lore_context: Optional lore context from PGVector
-            art_style: Art style from wizard input
-            
+            input_data: ArtDirectorInput with architecture plan, optional lore
+                context and art style
+
         Returns:
             AssetPromptsOutput with prompts and assets
+
+        Raises:
+            TypeError: if input_data is not an ArtDirectorInput
         """
-        prompt = self._build_prompt(architecture_plan, lore_context, art_style)
-        
+        if not isinstance(input_data, ArtDirectorInput):
+            raise TypeError(
+                f"ArtDirectorAgent.execute expects ArtDirectorInput, got {type(input_data).__name__}"
+            )
+
+        prompt = self._build_prompt(input_data.architecture_plan, input_data.lore_context, input_data.art_style)
+
         # Call LLM to generate prompts
         result = await self._call_llm(prompt, AssetPromptsOutput)
-        
+
         logger.info(f"Generated {len(result.prompts)} asset prompts")
         return result
-    
+
     def _build_prompt(self, arch_plan: ArchitecturePlan, lore_context: str | None, art_style: str) -> str:
         """Build the prompt for the LLM."""
         prompt = f"""Generate asset generation prompts based on the following Architecture Plan:

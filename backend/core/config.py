@@ -65,23 +65,66 @@ class Settings(BaseSettings):
         validation_alias=AliasChoices("ollama_embedding_model", "LLM_EMBEDDING_MODEL"),
     )
 
+    # LLM backend selection for services/llm_client.py:
+    #   "auto"    -> openai-compatible if OPENAI_API_KEY/LLM_API_KEY is set, else ollama
+    #   "ollama"  -> native Ollama server (OLLAMA_BASE_URL)
+    #   "openai"  -> any OpenAI-compatible endpoint (OPENAI_BASE_URL + OPENAI_API_KEY)
+    llm_backend: str = Field(
+        default="auto",
+        validation_alias=AliasChoices("llm_backend", "LLM_BACKEND"),
+    )
+    openai_base_url: str = Field(
+        default="http://localhost:8000/v1",
+        validation_alias=AliasChoices("openai_base_url", "OPENAI_BASE_URL", "LLM_BASE_URL"),
+    )
+    openai_api_key: str = Field(
+        default="",
+        validation_alias=AliasChoices("openai_api_key", "OPENAI_API_KEY", "LLM_API_KEY"),
+    )
+    openai_model: str = Field(
+        default="",
+        validation_alias=AliasChoices("openai_model", "OPENAI_MODEL", "LLM_MODEL"),
+    )
+
     # LLM tuning
     llm_temperature_code: float = 0.15
     llm_temperature_design: float = 0.6
     llm_max_tokens: int = 4096
+    # Max output tokens for code-generating roles (coder/architect/qa).
+    llm_code_max_tokens: int = 16384
     llm_context_window: int = 32768
+    llm_timeout_seconds: float = Field(
+        default=300.0,
+        validation_alias=AliasChoices("llm_timeout_seconds", "AGENT_TIMEOUT_SECONDS"),
+    )
+    llm_max_repair_retries: int = Field(
+        default=3,
+        validation_alias=AliasChoices("llm_max_repair_retries", "AGENT_RETRY_COUNT"),
+    )
 
-    # GPU configuration (AMD Ryzen AI Max 395 / RDNA 3.5 via Vulkan in WSL2)
+    # GPU configuration (AMD Ryzen AI Max+ 395 / Radeon 8060S, unified memory in WSL2)
     gpu_vendor: str = "AMD"
-    gpu_model: str = "Radeon 890M (RDNA 3.5)"
-    gpu_vram_gb: int = 64
+    gpu_model: str = "Radeon 8060S (RDNA 3.5)"
+    gpu_vram_gb: int = 128  # unified memory shared with the CPU
     gpu_backend: str = "rocm"  # Options: "rocm", "vulkan", "cuda", "cpu"
 
-    # Stable Diffusion
-    sd_webui_url: str = "http://localhost:7860"
-    sd_default_steps: int = 20
-    sd_default_width: int = 512
-    sd_default_height: int = 512
+    # Stable Diffusion (sd_webui_url kept as the internal name; env var is STABLE_DIFFUSION_URL)
+    sd_webui_url: str = Field(
+        default="http://localhost:7860",
+        validation_alias=AliasChoices("sd_webui_url", "STABLE_DIFFUSION_URL", "SD_WEBUI_URL"),
+    )
+    sd_default_steps: int = Field(
+        default=20,
+        validation_alias=AliasChoices("sd_default_steps", "STABLE_DIFFUSION_STEPS"),
+    )
+    sd_default_width: int = Field(
+        default=512,
+        validation_alias=AliasChoices("sd_default_width", "STABLE_DIFFUSION_WIDTH"),
+    )
+    sd_default_height: int = Field(
+        default=512,
+        validation_alias=AliasChoices("sd_default_height", "STABLE_DIFFUSION_HEIGHT"),
+    )
 
     # Fal.ai
     fal_ai_key: str | None = None
@@ -103,11 +146,17 @@ class Settings(BaseSettings):
     refresh_token_expire_days: int = 7
 
     # Godot Headless
-    godot_headless_path: str = "/usr/bin/godot-headless"
+    godot_headless_path: str = Field(
+        default="/usr/local/bin/godot",
+        validation_alias=AliasChoices("godot_headless_path", "GODOT_HEADLESS_PATH"),
+    )
     godot_export_preset: str = "Web"
 
     # Workspace
-    workspace_root: str = "/workspace/workspace_instances"
+    workspace_root: str = Field(
+        default="./workspace_instances",
+        validation_alias=AliasChoices("workspace_root", "WORKSPACE_ROOT"),
+    )
     max_workspace_size_mb: int = 500
 
     # Credits and Pricing

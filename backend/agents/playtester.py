@@ -25,8 +25,11 @@ from backend.agents.base import BaseAgent
 from backend.schemas.agent_schemas import PlaytestReport, PlaytestConfig
 
 
-class AIPlaytesterAgent(BaseAgent):
+class AIPlaytesterAgent(BaseAgent[PlaytestReport]):
     """Agent that runs automated playtests in Godot headless with bot-player simulation."""
+
+    # Deterministic agent: runs Godot headless, never calls the LLM.
+    role = "playtester"
 
     def __init__(self, godot_headless_path: str = "godot-headless"):
         super().__init__(model_name="qwen2.5:32b", temperature=0.0)

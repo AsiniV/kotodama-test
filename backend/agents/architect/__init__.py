@@ -4,7 +4,7 @@ Architect Agent - Analyzes GDD and plans Godot scene structure, modules, and sig
 
 import logging
 from backend.agents.base import BaseAgent
-from backend.schemas.agent_schemas import GameDesignDocument, ArchitecturePlan
+from backend.schemas.agent_schemas import ArchitectInput, GameDesignDocument, ArchitecturePlan
 
 logger = logging.getLogger("kotodama.agents.architect")
 
@@ -13,9 +13,14 @@ class ArchitectAgent(BaseAgent[ArchitecturePlan]):
     """
     Architect Agent responsible for creating architecture plans from GDDs.
     
-    Input: GameDesignDocument
+    Contract (Phase 1): execute() takes exactly ONE pydantic input model.
+
+    Input: ArchitectInput(design_document: GameDesignDocument)
+           (a bare GameDesignDocument is also accepted and wrapped automatically)
     Output: ArchitecturePlan with scene tree, modules, signal contracts, and level parameters
     """
+
+    role = "architect"
     
     def __init__(self, model_name: str = "qwen2.5-coder:32b", temperature: float = 0.15):
         super().__init__(model_name=model_name, temperature=temperature)
@@ -56,22 +61,34 @@ If the game requires levels, include level_parameters with:
 
 Output MUST be valid JSON matching the ArchitecturePlan schema."""
 
-    async def execute(self, input_data: GameDesignDocument) -> ArchitecturePlan:
+    async def execute(self, input_data):
         """
         Execute the Architect agent.
-        
+
         Args:
-            input_data: GameDesignDocument from Game Designer
-            
+            input_data: ArchitectInput wrapping the GDD (a bare GameDesignDocument
+                is accepted for convenience and wrapped automatically)
+
         Returns:
             ArchitecturePlan with complete architecture specification
+
+        Raises:
+            TypeError: if input_data is neither ArchitectInput nor GameDesignDocument
         """
-        prompt = self._build_prompt(input_data)
+        if isinstance(input_data, GameDesignDocument):
+            input_data = ArchitectInput(design_document=input_data)
+        if not isinstance(input_data, ArchitectInput):
+            raise TypeError(
+                f"ArchitectAgent.execute expects ArchitectInput, got {type(input_data).__name__}"
+            )
+
+        gdd = input_data.design_document
+        prompt = self._build_prompt(gdd)
         result = await self._call_llm(prompt, ArchitecturePlan)
-        
-        logger.info(f"Generated Architecture Plan for: {input_data.title}")
+
+        logger.info(f"Generated Architecture Plan for: {gdd.title}")
         return result
-    
+
     def _build_prompt(self, gdd: GameDesignDocument) -> str:
         """Build the prompt for the LLM."""
         prompt = f"""Create an Architecture Plan based on the following Game Design Document:

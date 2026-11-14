@@ -26,6 +26,8 @@ from backend.agents.coder import CoderAgent
 from backend.agents.qa import QAAgent
 from backend.agents.playtester import AIPlaytesterAgent
 from backend.schemas.agent_schemas import (
+    WizardInput, DesignerInput, ArchitectInput, QuestDesignerInput,
+    DialogueWriterInput, CoderInput, QAInput, CoderOutput, LocalizationInput,
     GameDesignDocument, ArchitecturePlan, GeneratedFile,
     QAReport, PlaytestReport, PlaytestConfig, QuestGraph, DialogueTree,
     LocalizationOutput
@@ -40,7 +42,8 @@ from backend.agents.localization import LocalizationManagerAgent
 class GenerationState(TypedDict):
     """State passed through the generation pipeline."""
     messages: Annotated[list, add_messages]
-    wizard_input: dict
+    # Canonical WizardInput (raw dicts are normalized in run_generation).
+    wizard_input: WizardInput
     gdd: GameDesignDocument | None
     architecture_plan: ArchitecturePlan | None
     quest_graphs: list[QuestGraph]
@@ -54,6 +57,43 @@ class GenerationState(TypedDict):
     error_message: str | None
     workspace_path: str | None
     skip_agents: list[str]
+
+
+def _wizard_input_from_dict(wizard_input) -> WizardInput:
+    """Coerce a raw wizard dict (API layer) into the validated WizardInput model.
+
+    Maps API field names onto the agent schema; project_name falls back to the
+    orchestrator's project id. Unknown keys are dropped.
+    """
+    if isinstance(wizard_input, WizardInput):
+        return wizard_input
+
+    data = dict(wizard_input or {})
+    # Canonical model: only remap API-specific field names.
+    data.setdefault("project_name", data.get("project_id") or "kotodama-project")
+    if not data.get("text_description"):
+        data["text_description"] = data.get("description", "")
+    try:
+        return WizardInput.model_validate(data)
+    except Exception:
+        pass
+
+    mapped = {
+        "project_name": data.get("project_name") or data.get("project_id") or "kotodama-project",
+        "genre": data.get("genre", ""),
+        "perspective": data.get("perspective", ""),
+        "art_style": data.get("art_style", "pixel-art"),
+        "setting": data.get("setting", ""),
+        "scale": data.get("scale", "small"),
+        "controls": data.get("controls", {}),
+        "has_saving": bool(data.get("has_saving", False)),
+        "monetization": data.get("monetization") or "none",
+        "quest_complexity": data.get("quest_complexity", "none"),
+        "dialogue_depth": data.get("dialogue_depth", "none"),
+        "lore_collection_id": data.get("lore_collection_id"),
+        "text_description": data.get("description") or data.get("text_description", ""),
+    }
+    return WizardInput.model_validate(mapped)
 
 
 class OrchestratorService:
@@ -181,7 +221,8 @@ class OrchestratorService:
         
         initial_state: GenerationState = {
             "messages": [],
-            "wizard_input": wizard_input,
+            # Normalize once so every node sees the canonical validated model.
+            "wizard_input": _wizard_input_from_dict(wizard_input),
             "gdd": None,
             "architecture_plan": None,
             "quest_graphs": [],
@@ -205,7 +246,9 @@ class OrchestratorService:
     async def _run_designer(self, state: GenerationState) -> dict:
         """Run Game Designer agent."""
         try:
-            gdd = await self.designer.execute(state["wizard_input"])
+            gdd = await self.designer.execute(DesignerInput(
+                wizard_input=_wizard_input_from_dict(state["wizard_input"])
+            ))
             return {"gdd": gdd, "messages": [f"✓ GDD created: {gdd.title}"]}
         except Exception as e:
             return {"error_message": f"Designer failed: {str(e)}"}
@@ -213,7 +256,7 @@ class OrchestratorService:
     async def _run_architect(self, state: GenerationState) -> dict:
         """Run Architect agent."""
         try:
-            plan = await self.architect.execute(state["gdd"])
+            plan = await self.architect.execute(ArchitectInput(design_document=state["gdd"]))
             return {"architecture_plan": plan, "messages": [f"✓ Architecture planned: {len(plan.modules)} modules"]}
         except Exception as e:
             return {"error_message": f"Architect failed: {str(e)}"}
@@ -224,7 +267,11 @@ class OrchestratorService:
             if state["gdd"].quest_complexity == "none":
                 return {"quest_graphs": [], "messages": ["⏳ Quest Designer: Skipped (complexity=none)"]}
             
-            quest_graphs = await self.quest_designer.execute(state["gdd"], state["architecture_plan"])
+            quests_output = await self.quest_designer.execute(QuestDesignerInput(
+                design_document=state["gdd"],
+                architecture_plan=state["architecture_plan"],
+            ))
+            quest_graphs = quests_output.quests
             return {"quest_graphs": quest_graphs, "messages": [f"✓ Generated {len(quest_graphs)} quests"]}
         except Exception as e:
             return {"error_message": f"Quest Designer failed: {str(e)}"}
@@ -237,17 +284,18 @@ class OrchestratorService:
             
             # Get lore context if available
             lore_context = None
-            if state["wizard_input"].get("lore_collection_id"):
+            if state["wizard_input"].lore_collection_id:
                 lore_context = await self.lore_rag.get_collection_context(
-                    state["wizard_input"]["lore_collection_id"],
+                    state["wizard_input"].lore_collection_id,
                     "dialogue characters NPCs"
                 )
             
-            dialogue_trees = await self.dialogue_writer.execute(
-                state["gdd"],
-                state.get("quest_graphs", []),
-                lore_context
-            )
+            dialogues_output = await self.dialogue_writer.execute(DialogueWriterInput(
+                design_document=state["gdd"],
+                quest_graphs=state.get("quest_graphs", []),
+                lore_context=lore_context,
+            ))
+            dialogue_trees = dialogues_output.dialogues
             return {"dialogue_trees": dialogue_trees, "messages": [f"✓ Generated {len(dialogue_trees)} dialogue trees"]}
         except Exception as e:
             return {"error_message": f"Dialogue Writer failed: {str(e)}"}
@@ -257,16 +305,16 @@ class OrchestratorService:
         try:
             # Get lore context if available
             lore_context = None
-            if state["wizard_input"].get("lore_collection_id"):
+            if getattr(state["wizard_input"], "lore_collection_id", None):
                 lore_context = await self.lore_rag.get_collection_context(
-                    state["wizard_input"]["lore_collection_id"],
+                    state["wizard_input"].lore_collection_id,
                     "art style visual aesthetic"
                 )
             
-            art_style = state["wizard_input"].get("art_style", "pixel-art")
+            art_style = getattr(state["wizard_input"], "art_style", None) or "pixel-art"
             
             # Use Art Pipeline Service to coordinate full asset generation
-            project_id = state["wizard_input"].get("project_name", "unknown_project")
+            project_id = state["wizard_input"].project_name
             asset_output = await self.art_pipeline.generate_project_assets(
                 architecture_plan=state["architecture_plan"],
                 lore_context=lore_context,
@@ -303,12 +351,13 @@ class OrchestratorService:
                 from pathlib import Path
                 preserved = await self.workspace_manager.preserve_assets(Path(state["workspace_path"]))
             
-            files = await self.coder.execute(
-                state["architecture_plan"],
-                state.get("quest_graphs", []),
-                state.get("dialogue_trees", []),
-                state.get("asset_paths", []),
-            )
+            coder_output = await self.coder.execute(CoderInput(
+                architecture_plan=state["architecture_plan"],
+                quest_graphs=state.get("quest_graphs", []),
+                dialogue_trees=state.get("dialogue_trees", []),
+                asset_paths=state.get("asset_paths", []),
+            ))
+            files = coder_output.files
             
             return {"generated_files": files, "messages": [f"✓ Generated {len(files)} files (Attempt {state['attempt_number']})"]}
         except Exception as e:
@@ -317,11 +366,15 @@ class OrchestratorService:
     async def _run_qa(self, state: GenerationState) -> dict:
         """Run QA agent."""
         try:
-            report = await self.qa.execute(
-                state["generated_files"],
-                state["architecture_plan"],
-            )
-            return {"qa_report": report, "messages": [f"✓ QA: {'PASSED' if report.passed else 'FAILED'} ({report.errors_found} errors)"]}
+            report = await self.qa.execute(QAInput(
+                coder_output=CoderOutput(
+                    files=state["generated_files"],
+                    modules_created=[m.get("id", m.get("name", "?"))
+                                     for m in state["architecture_plan"].required_modules],
+                ),
+                signal_contracts=state["architecture_plan"].signal_contracts,
+            ))
+            return {"qa_report": report, "messages": [f"✓ QA: {'PASSED' if report.passed else 'FAILED'} ({len(report.errors)} errors)"]}
         except Exception as e:
             return {"error_message": f"QA failed: {str(e)}"}
 
@@ -329,10 +382,11 @@ class OrchestratorService:
         """Run Localization Manager agent."""
         try:
             # Extract localization strings from dialogue trees and generated files
-            loc_output = await self.localization_manager.execute(
+            loc_output = await self.localization_manager.execute(LocalizationInput(
                 dialogue_trees=state.get("dialogue_trees", []),
-                generated_files=state.get("generated_files", [])
-            )
+                quest_graphs=state.get("quest_graphs", []),
+                generated_file_paths=[f.path for f in state.get("generated_files", [])],
+            ))
             
             # Write localization files to workspace
             if state["workspace_path"] and loc_output.localization_files:
@@ -382,7 +436,7 @@ class OrchestratorService:
                 return {"error_message": "No workspace to commit"}
             
             from pathlib import Path
-            changes = [f.module_id for f in state["architecture_plan"].modules] if state["architecture_plan"] else ["unknown"]
+            changes = [m.get("id", m.get("name", "module")) for m in state["architecture_plan"].required_modules] if state["architecture_plan"] else ["unknown"]
             commit_hash = await self.workspace_manager.save_result(
                 Path(state["workspace_path"]),
                 changes

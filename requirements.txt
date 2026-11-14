@@ -28,6 +28,8 @@ langchain==0.3.4
 langchain-core==0.3.12
 langchain-community==0.3.3
 langsmith==0.1.143
+ollama==0.6.1
+langgraph-checkpoint-postgres==2.0.23
 
 # -----------------------------------------------------------------------------
 # HTTP CLIENTS
