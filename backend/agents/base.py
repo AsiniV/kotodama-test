@@ -4,6 +4,8 @@ Provides common functionality for LLM interaction, prompt management, and output
 """
 
 from abc import ABC, abstractmethod
+from functools import lru_cache
+from pathlib import Path
 from typing import Any, Generic, Optional, TypeVar
 import logging
 
@@ -12,6 +14,49 @@ from pydantic import BaseModel
 logger = logging.getLogger("kotodama.agents")
 
 T = TypeVar('T', bound=BaseModel)
+
+# Repo root: backend/agents/base.py -> parents[2] == /workspace (repo root)
+REPO_ROOT = Path(__file__).resolve().parents[2]
+AGENTS_MD_PATH = REPO_ROOT / "AGENTS.md"
+
+
+def _strip_html_comments(text: str) -> str:
+    """Remove HTML comments (maintainer notes) from a markdown document."""
+    out: list[str] = []
+    rest = text
+    while True:
+        start = rest.find("<!--")
+        if start == -1:
+            out.append(rest)
+            break
+        out.append(rest[:start])
+        end = rest.find("-->", start + 4)
+        if end == -1:  # unterminated comment: drop the remainder
+            break
+        rest = rest[end + 3:]
+    return "".join(out)
+
+
+@lru_cache(maxsize=None)
+def load_common_preamble(path: Optional[Path] = None) -> str:
+    """Load the common system-prompt preamble stored in AGENTS.md (repo root).
+
+    The file is read once per path and cached; maintainer-only HTML comments are
+    stripped. If the file is missing the pipeline still works — an empty
+    preamble is returned and a warning is logged.
+    """
+    md_path = path or AGENTS_MD_PATH
+    try:
+        raw = md_path.read_text(encoding="utf-8")
+    except OSError as e:
+        logger.warning("Could not read agent preamble %s: %s", md_path, e)
+        return ""
+    body = _strip_html_comments(raw).strip()
+    # Drop the leading markdown title line; it adds no instruction value.
+    lines = body.splitlines()
+    if lines and lines[0].startswith("# "):
+        body = "\n".join(lines[1:]).strip()
+    return body
 
 
 class BaseAgent(ABC, Generic[T]):
@@ -38,7 +83,10 @@ class BaseAgent(ABC, Generic[T]):
         """
         self.model_name = model_name
         self.temperature = temperature
-        self.system_prompt = self._get_system_prompt()
+        # Common preamble (AGENTS.md, repo root) + role-specific system prompt.
+        preamble = load_common_preamble()
+        role_prompt = self._get_system_prompt().strip()
+        self.system_prompt = f"{preamble}\n\n{role_prompt}" if preamble else role_prompt
 
     @abstractmethod
     def _get_system_prompt(self) -> str:

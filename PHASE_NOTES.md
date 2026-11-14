@@ -5,6 +5,29 @@ reflects the actual code on disk, not the outdated README/DEVELOPER_GUIDE.
 
 ---
 
+## 0. Phase 1 close-out audit (2026-11-14)
+
+Re-audited every Phase 1 task against the files on disk; tasks 1–3 and the deps were
+already implemented. Completed the remaining gap and hardened alignment:
+
+- **AGENTS.md (task 4)**: created at the repo root with the common system-prompt
+  preamble (immutable Core Engine, `module_` signal prefix, closed 10-slot asset
+  vocabulary, Godot 4.x GDScript, JSON-only output). `BaseAgent.__init__` now
+  prepends it to each agent's role-specific system prompt via
+  `backend.agents.base.load_common_preamble()` (cached, HTML comments stripped,
+  graceful degradation if the file is missing). New mocked-LLM tests in
+  `tests/test_config_and_base_agent.py` cover config/env alignment, the preamble,
+  and `BaseAgent._call_llm` returning a validated model through the fake client.
+- **config.py**: `llm_max_tokens` / `llm_code_max_tokens` now have explicit
+  `LLM_MAX_TOKENS` / `LLM_CODE_MAX_TOKENS` validation aliases (they were silently
+  documented-but-unread in `.env.example`). All other prompt items (STABLE_DIFFUSION_URL
+  alias, unified `LLM_*` model names, `WORKSPACE_ROOT`, `GODOT_HEADLESS_PATH`,
+  Radeon 8060S / 128 GB defaults, 16384 code tokens) verified present.
+- **.env.example**: added the missing GPU section (`GPU_VENDOR/GPU_MODEL/GPU_VRAM_GB/
+  GPU_BACKEND`) so every Settings field family is discoverable from the template.
+- Offline verification confirmed green without GPU/LLM/network: 70 passed
+  (`make test-offline`), 11/11 agents produce validated outputs (`make smoke-agents`).
+
 ## 1. New unified agent `execute()` signatures (single Pydantic input model)
 
 Every agent's `execute()` now takes **exactly one** Pydantic input model and returns a

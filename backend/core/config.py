@@ -89,9 +89,15 @@ class Settings(BaseSettings):
     # LLM tuning
     llm_temperature_code: float = 0.15
     llm_temperature_design: float = 0.6
-    llm_max_tokens: int = 4096
+    llm_max_tokens: int = Field(
+        default=4096,
+        validation_alias=AliasChoices("llm_max_tokens", "LLM_MAX_TOKENS"),
+    )
     # Max output tokens for code-generating roles (coder/architect/qa).
-    llm_code_max_tokens: int = 16384
+    llm_code_max_tokens: int = Field(
+        default=16384,
+        validation_alias=AliasChoices("llm_code_max_tokens", "LLM_CODE_MAX_TOKENS"),
+    )
     llm_context_window: int = 32768
     llm_timeout_seconds: float = Field(
         default=300.0,
