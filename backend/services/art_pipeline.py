@@ -8,6 +8,7 @@ from pathlib import Path
 from typing import Optional
 from datetime import datetime
 
+from backend.core import paths
 from backend.schemas.agent_schemas import ArchitecturePlan, AssetPromptsOutput, GeneratedAsset
 from backend.agents.art_director import get_art_director_agent
 from backend.services.image_generation import get_image_gen_service
@@ -126,7 +127,8 @@ class ArtPipelineService:
         Returns:
             List of downloaded asset paths
         """
-        assets_dir = workspace_path / "game_project" / "assets"
+        # Canonical layout: {workspace}/godot_project/assets (res://assets/)
+        assets_dir = workspace_path / paths.GODOT_PROJECT_DIR_NAME / "assets"
         assets_dir.mkdir(parents=True, exist_ok=True)
         
         downloaded_paths = []
@@ -172,12 +174,12 @@ class ArtPipelineService:
             workspace_path: Path to project workspace
             
         Returns:
-            List of local asset paths relative to game_project
+            List of local asset paths relative to godot_project
         """
         # First ensure assets are downloaded
         downloaded = await self.download_assets_for_project(assets, workspace_path)
         
-        # Return paths relative to game_project/assets/
+        # Return paths relative to godot_project/assets/ (res://assets/)
         relative_paths = [f"assets/{path.name}" for path in downloaded]
         
         logger.info(f"Prepared {len(relative_paths)} asset paths for Coder")

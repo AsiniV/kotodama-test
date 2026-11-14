@@ -64,16 +64,12 @@ class GodotIntegrator:
 
     @staticmethod
     def _resolve_godot_core_path() -> Path:
-        """Ищет immutable шаблон godot_core в типовых расположениях."""
-        candidates = [
-            Path("/app/godot_core"),
-            Path(__file__).resolve().parents[2] / "godot_core",
-            Path.cwd() / "godot_core",
-        ]
-        for c in candidates:
-            if c.is_dir():
-                return c
-        return candidates[0]  # дадим _copy_godot_core поднять понятную ошибку
+        """Immutable шаблон godot_core — единый источник пути (Phase 4).
+
+        Использует ``backend.core.paths.template_path()`` (настраивается через
+        ``GODOT_CORE_PATH``); метод оставлен для обратной совместимости.
+        """
+        return paths.template_path()
 
     # ------------------------------------------------------------------
     # Структура папок
@@ -149,16 +145,10 @@ class GodotIntegrator:
     # Шаг 2: ассеты
     # ------------------------------------------------------------------
     def _find_assets_root(self) -> Path:
-        """Определяет корень ассетов: workspace/{game_id}/assets или
-        legacy layout /app/workspace/{game_id}/assets (см. /generate-audio)."""
-        candidates = [
-            self.workspace_root / "assets",
-            Path("/app/workspace") / self.game_id / "assets",
-        ]
-        for c in candidates:
-            if c.exists():
-                return c
-        return candidates[0]
+        """Определяет корень ассетов: canonical staging dir
+        {workspace_root}/{game_id}/assets (см. backend/core/paths.py и
+        эндпоинт /generate-audio, который пишет туда же)."""
+        return paths.staging_assets_path(self.game_id)
 
     def _copy_assets(self):
         """Копирует ассеты из workspace (или MinIO-кэша) в проект Godot."""
