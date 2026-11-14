@@ -11,6 +11,7 @@ import uuid
 from backend.services.orchestration import get_orchestrator
 from backend.services.workspace_manager import get_workspace_manager
 from backend.services.billing_service import get_billing_service
+from backend.core import paths
 from backend.schemas.api_schemas import (
     GenerationResponse, ProjectStatusResponse,
 )
@@ -109,7 +110,12 @@ async def trigger_audio_generation(
     Генерация занимает 10-40 секунд на трек, поэтому HTTP-ответ не блокируется:
     задачи ставятся в BackgroundTasks и выполняются после возврата ответа.
     """
-    workspace_path = f"/app/workspace/{game_id}/assets/audio"
+    # Canonical layout (backend/core/paths.py): staging dir
+    # {workspace_root}/{game_id}/assets/audio — the same directory
+    # GodotIntegrator copies from during integration.
+    workspace_path = str(
+        paths.staging_assets_path(game_id) / "audio"
+    )
     os.makedirs(workspace_path, exist_ok=True)
 
     try:

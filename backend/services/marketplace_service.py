@@ -12,6 +12,8 @@ from typing import Literal
 from datetime import datetime
 from pydantic import BaseModel, Field
 
+from backend.core import paths
+
 
 class ModuleMetadata(BaseModel):
     """Metadata for a marketplace module."""
@@ -523,6 +525,7 @@ def get_marketplace_service(storage_path: Path | None = None) -> MarketplaceServ
     global _marketplace_service
     if _marketplace_service is None:
         if storage_path is None:
-            storage_path = Path("/workspace/marketplace_modules")
+            # Canonical root: {workspace_root}/marketplace_modules
+            storage_path = paths.workspace_root() / "marketplace_modules"
         _marketplace_service = MarketplaceService(storage_path=storage_path)
     return _marketplace_service

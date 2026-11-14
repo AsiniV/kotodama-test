@@ -23,10 +23,8 @@ import shutil
 from pathlib import Path
 from typing import Dict, List, Optional
 
-from backend.core.config import get_settings
+from backend.core import paths
 from backend.schemas.agent_schemas import AudioRequest, EntityRequest, GameIR
-
-settings = get_settings()
 
 # Неэкранированные идентификаторы узлов допустимы только из [A-Za-z0-9_],
 # узел не может называться одним из служебных имён базового шаблона.
@@ -52,9 +50,10 @@ class GodotIntegrator:
     def __init__(self, game_id: str, game_ir: GameIR):
         self.game_id = game_id
         self.ir = game_ir
-        self.workspace_root = Path(settings.workspace_root) / game_id
-        self.godot_core_path = self._resolve_godot_core_path()
-        self.output_path = self.workspace_root / "godot_project"
+        # Canonical layout (backend/core/paths.py): {workspace_root}/{game_id}/godot_project
+        self.workspace_root = paths.project_workspace(game_id)
+        self.godot_core_path = paths.template_path()
+        self.output_path = paths.godot_project_path(game_id)
 
         # id AudioRequest -> путь к файлу спрайта/audio внутри проекта (res://...)
         self.sprite_map: Dict[str, str] = {}   # entity sprite stem -> res path
@@ -65,16 +64,12 @@ class GodotIntegrator:
 
     @staticmethod
     def _resolve_godot_core_path() -> Path:
-        """Ищет immutable шаблон godot_core в типовых расположениях."""
-        candidates = [
-            Path("/app/godot_core"),
-            Path(__file__).resolve().parents[2] / "godot_core",
-            Path.cwd() / "godot_core",
-        ]
-        for c in candidates:
-            if c.is_dir():
-                return c
-        return candidates[0]  # дадим _copy_godot_core поднять понятную ошибку
+        """Immutable шаблон godot_core — единый источник пути (Phase 4).
+
+        Использует ``backend.core.paths.template_path()`` (настраивается через
+        ``GODOT_CORE_PATH``); метод оставлен для обратной совместимости.
+        """
+        return paths.template_path()
 
     # ------------------------------------------------------------------
     # Структура папок
@@ -150,16 +145,10 @@ class GodotIntegrator:
     # Шаг 2: ассеты
     # ------------------------------------------------------------------
     def _find_assets_root(self) -> Path:
-        """Определяет корень ассетов: workspace/{game_id}/assets или
-        legacy layout /app/workspace/{game_id}/assets (см. /generate-audio)."""
-        candidates = [
-            self.workspace_root / "assets",
-            Path("/app/workspace") / self.game_id / "assets",
-        ]
-        for c in candidates:
-            if c.exists():
-                return c
-        return candidates[0]
+        """Определяет корень ассетов: canonical staging dir
+        {workspace_root}/{game_id}/assets (см. backend/core/paths.py и
+        эндпоинт /generate-audio, который пишет туда же)."""
+        return paths.staging_assets_path(self.game_id)
 
     def _copy_assets(self):
         """Копирует ассеты из workspace (или MinIO-кэша) в проект Godot."""

@@ -1,4 +1,5 @@
 from functools import lru_cache
+from pathlib import Path
 
 from pydantic import AliasChoices, Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
@@ -158,12 +159,32 @@ class Settings(BaseSettings):
     )
     godot_export_preset: str = "Web"
 
-    # Workspace
+    # Workspace (see backend/core/paths.py for the canonical layout:
+    # {workspace_root}/{project_id}/godot_project/ (+ assets/, data/))
     workspace_root: str = Field(
-        default="./workspace_instances",
+        # Absolute /app/workspace is bind-mounted by docker-compose for both
+        # the backend and the godot-headless worker; locally (WSL2) override
+        # via WORKSPACE_ROOT env var.
+        default="/app/workspace",
         validation_alias=AliasChoices("workspace_root", "WORKSPACE_ROOT"),
     )
     max_workspace_size_mb: int = 500
+
+    # Immutable Godot template directory (repo-level godot_core/).
+    godot_core_path: str = Field(
+        default=str(Path(__file__).resolve().parents[2] / "godot_core"),
+        validation_alias=AliasChoices("godot_core_path", "GODOT_CORE_PATH"),
+    )
+
+    # Git identity used by the workspace manager for baseline/result commits.
+    git_author_name: str = Field(
+        default="Kotodama Bot",
+        validation_alias=AliasChoices("git_author_name", "GIT_AUTHOR_NAME"),
+    )
+    git_author_email: str = Field(
+        default="kotodama@localhost",
+        validation_alias=AliasChoices("git_author_email", "GIT_AUTHOR_EMAIL"),
+    )
 
     # Credits and Pricing
     credits_per_simple_game: int = 10

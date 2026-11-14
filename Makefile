@@ -8,7 +8,7 @@
 
 .PHONY: help setup dev dev-backend dev-frontend test build deploy backup clean lint migrate \
         docker-up docker-down docker-up-infra logs ollama-pull minio-create-buckets \
-        test-offline smoke-agents verify-offline
+        test-offline smoke-agents test-workspace verify-offline
 
 # -----------------------------------------------------------------------------
 # HELP
@@ -36,6 +36,8 @@ help:
 	@echo "  logs                 View service logs"
 	@echo "  ollama-pull          Pull LLM models into native WSL2 Ollama (outside Docker)"
 	@echo "  minio-create-buckets Create MinIO buckets (kotodama-assets, kotodama-builds)"
+	@echo "  test-workspace       Phase 4 offline workspace paths/git tests"
+	@echo "  verify-offline       Full offline verification (tests + smoke + workspace)"
 
 # -----------------------------------------------------------------------------
 # SETUP
@@ -98,7 +100,12 @@ smoke-agents:
 	@echo "Running offline agent smoke test (mocked LLM transport)..."
 	python scripts/agent_smoke.py
 
-verify-offline: test-offline smoke-agents
+# Phase 4: canonical workspace layout + git baseline/rollback/asset-preservation.
+test-workspace:
+	@echo "Running offline workspace paths tests (tmp_path + git only)..."
+	python -m pytest tests/test_workspace_paths.py -v -p no:libtmux
+
+verify-offline: test-offline smoke-agents test-workspace
 	@echo "Offline verification complete."
 
 # -----------------------------------------------------------------------------

@@ -208,3 +208,52 @@ fix: 11/11 OK offline; full suite: 110 passed.
    `-p no:libtmux`, but a bare `pytest` invocation fails at startup. Consider
    adding `PYTEST_ADDOPTS` or pinning pytest in requirements-dev during the
    test-hygiene pass.
+
+## Phase 4 — Paths + workspace: close-out (2026-11-14)
+
+**What landed:**
+- `backend/core/paths.py`: single source of truth for the canonical layout
+  `{workspace_root}/{project_id}/godot_project/` (+ `assets/`, `data/`) with a
+  sibling staging dir `{workspace}/{project_id}/assets/` and
+  `{workspace_root}/exports/`. The old `game_project/` name and hard-coded
+  `/workspace/*` roots are gone from all Python consumers (playtester,
+  art_pipeline, godot_integrator, api/export, api/generation, api/marketplace,
+  marketplace_service). Template resolves to repo-level `godot_core/` via
+  `Settings.godot_core_path` (env `GODOT_CORE_PATH`).
+- `WorkspaceManager`: root from settings (`WORKSPACE_ROOT`), local git identity
+  (`GIT_AUTHOR_NAME`/`GIT_AUTHOR_EMAIL`), real `baseline` tag created at
+  workspace init, working `rollback()` (`reset --hard baseline` + `clean -fd`),
+  functional snapshot-based `preserve_assets()`/`restore_assets()` with a
+  git-ignored `.kotodama_preserved/` dir and `clear_preserved()`.
+- `docker-compose.yml`: backend and godot-headless now share ONE named volume
+  (`workspace_data` → `/app/workspace` and `/godot/workspace`; the previous
+  divergence between bind-mount `./workspace` and named volume was real —
+  workers never saw generated projects). Backend gets
+  `WORKSPACE_ROOT/GODOT_CORE_PATH/GIT_AUTHOR_*` env; worker gets
+  `WORKSPACE_ROOT/GODOT_CORE_PATH`.
+- `.env.example`: new WORKSPACE section (`WORKSPACE_ROOT=./workspace`,
+  `GODOT_CORE_PATH=./godot_core`, `GIT_AUTHOR_*`); stale
+  `WORKSPACE_ROOT=./workspace_instances` in GENERATION SETTINGS removed.
+- Tests: `tests/test_workspace_paths.py` (10 tests, fully offline — tmp_path +
+  system git only): path-helper consistency, template copy (*.import ignored),
+  baseline tag == HEAD after create, rollback reverts dirty edits AND removes
+  untracked files, rollback resets branch pointer after `[result]` commits,
+  preserve/restore roundtrip survives rollback+clean, cleanup.
+
+**Adjacent bugs noticed (NOT fixed — other phases' scope):**
+1. `backend/services/orchestration.py` `_run_retry` (~line 352) calls
+   `workspace_manager.preserve_assets()` but NOTHING ever calls
+   `restore_assets()`/`clear_preserved()` afterwards — preserved assets sit in
+   `.kotodama_preserved/` forever and are never brought back, so generated
+   assets are still effectively lost across retries until the orchestrator is
+   rewired (fix belongs to the orchestration phase; the manager API + tests are
+   ready).
+2. `backend/api/export.py` Fastlane path writes export presets/artifacts INTO
+   the tracked `godot_project/` tree (contaminates the git baseline; later
+   rollbacks delete or revert them). Should write under `paths.exports_dir()`.
+3. Marketplace download/delete endpoints remain mocks (`api/marketplace.py`
+   fakes success; storage path derived from workspace root but no real upload
+   flow) — pre-existing, unchanged by Phase 4.
+4. `Settings.workspace_root` default `/app/workspace` is meaningless on bare
+   WSL2 runs without docker-compose; acceptable because compose pins it, but a
+   relative default would be friendlier (devex phase).

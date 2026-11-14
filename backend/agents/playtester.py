@@ -22,6 +22,7 @@ from typing import Optional
 from pathlib import Path
 
 from backend.agents.base import BaseAgent
+from backend.core import paths
 from backend.schemas.agent_schemas import PlaytestReport, PlaytestConfig
 
 
@@ -42,7 +43,9 @@ class AIPlaytesterAgent(BaseAgent[PlaytestReport]):
     async def execute(self, config: PlaytestConfig) -> PlaytestReport:
         """Run playtest with bot-player simulation and return report."""
         workspace_path = Path(config.workspace_path)
-        project_path = workspace_path / "game_project"
+        # Canonical layout (backend/core/paths.py): godot_project/, not the
+        # old game_project/ name.
+        project_path = workspace_path / paths.GODOT_PROJECT_DIR_NAME
         
         if not project_path.exists():
             return PlaytestReport(

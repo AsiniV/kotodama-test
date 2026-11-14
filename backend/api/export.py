@@ -15,6 +15,7 @@ from typing import Optional, Literal
 import uuid
 from datetime import datetime
 
+from backend.core import paths
 from backend.services.export_service import (
     get_export_service,
     get_fastlane_service,
@@ -66,8 +67,8 @@ async def request_export(
     # Generate unique job ID
     job_id = str(uuid.uuid4())
     
-    # Create output path
-    output_dir = Path(f"/workspace/exports/{request.user_id}/{request.project_id}")
+    # Create output path (canonical layout: {workspace_root}/exports/...)
+    output_dir = paths.exports_dir() / request.user_id / request.project_id
     output_file = output_dir / f"{request.project_id}_{request.platform}"
     
     if request.platform == "web":
@@ -85,7 +86,7 @@ async def request_export(
     
     # Create export config
     config = ExportConfig(
-        project_path=Path(f"/workspace/workspace_instances/{request.project_id}"),
+        project_path=paths.godot_project_path(request.project_id),
         output_path=output_file,
         preset_name=request.preset_name,
         platform=request.platform,  # type: ignore
@@ -167,8 +168,8 @@ async def build_android_apk(
     service: FastlaneExportService = Depends(get_fastlane_service),
 ):
     """Build signed Android APK using Fastlane."""
-    project_path = Path(f"/workspace/workspace_instances/{project_id}")
-    output_path = Path(f"/workspace/exports/{user_id}/{project_id}.apk")
+    project_path = paths.godot_project_path(project_id)
+    output_path = paths.exports_dir() / user_id / f"{project_id}.apk"
     
     success, message = await service.build_android_apk(
         project_path=project_path,
@@ -192,8 +193,8 @@ async def build_ios_ipa(
     service: FastlaneExportService = Depends(get_fastlane_service),
 ):
     """Build signed iOS IPA using Fastlane."""
-    project_path = Path(f"/workspace/workspace_instances/{project_id}")
-    output_path = Path(f"/workspace/exports/{user_id}/{project_id}.ipa")
+    project_path = paths.godot_project_path(project_id)
+    output_path = paths.exports_dir() / user_id / f"{project_id}.ipa"
     
     success, message = await service.build_ios_ipa(
         project_path=project_path,

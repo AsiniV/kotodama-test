@@ -13,6 +13,7 @@ from pydantic import BaseModel
 from pathlib import Path
 from typing import Optional
 
+from backend.core import paths
 from backend.services.marketplace_service import (
     get_marketplace_service,
     MarketplaceService,
@@ -54,8 +55,8 @@ async def submit_module(
 ):
     """Submit a module to the marketplace."""
     # In production, module_path would come from file upload
-    # For now, we simulate with a test module path
-    module_path = Path(f"/workspace/test_modules/{request.module_id}")
+    # For now, we simulate with a test module path under the workspace root
+    module_path = paths.workspace_root() / "test_modules" / request.module_id
     
     if not module_path.exists():
         raise HTTPException(status_code=400, detail="Module path does not exist")

@@ -139,12 +139,21 @@ services:
       DEBUG: "true"
       SECRET_KEY: ${SECRET_KEY:-kotodama_dev_secret_key_change_in_production}
       ALLOWED_ORIGINS: "http://localhost:3000,http://localhost:8000,http://nginx:80"
+      # Phase 4: canonical workspace layout (see backend/core/paths.py).
+      # WORKSPACE_ROOT is pinned to the shared 'workspace_data' volume so the
+      # backend and the godot-headless worker see identical files; override
+      # via .env only for exotic setups. GIT_AUTHOR_* set the local git
+      # identity used by WorkspaceManager for baseline/result commits.
+      WORKSPACE_ROOT: ${WORKSPACE_ROOT:-/app/workspace}
+      GODOT_CORE_PATH: /app/godot_core
+      GIT_AUTHOR_NAME: ${GIT_AUTHOR_NAME:-Kotodama Bot}
+      GIT_AUTHOR_EMAIL: ${GIT_AUTHOR_EMAIL:-kotodama@localhost}
     ports:
       - "8000:8000"
     volumes:
       - ./backend:/app/backend:ro
       - ./godot_core:/app/godot_core:ro
-      - ./workspace:/app/workspace
+      - workspace_data:/app/workspace
       - ./configs:/app/configs:ro
     depends_on:
       postgres:
@@ -174,6 +183,13 @@ services:
     image: barichello/godot-ci:4.3
     container_name: kotodama-godot
     restart: unless-stopped
+    environment:
+      # Phase 4: the worker's /godot/workspace is the SAME 'workspace_data'
+      # volume the backend mounts at /app/workspace (WORKSPACE_ROOT) — one
+      # shared layout, no more divergence between ./workspace and a named
+      # volume. Export artifacts land in {workspace}/exports inside it.
+      WORKSPACE_ROOT: /godot/workspace
+      GODOT_CORE_PATH: /godot/core
     volumes:
       - ./godot_core:/godot/core:ro
       - workspace_data:/godot/workspace
