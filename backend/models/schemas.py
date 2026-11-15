@@ -241,3 +241,25 @@ class LevelLayout(Base):
     end_room = Column(String(100))
     validation_passed = Column(Boolean, default=False)
     created_at = Column(DateTime(timezone=True), server_default=func.now())
+
+
+class GenerationProgressRecord(Base):
+    """Phase 7: durable per-project generation progress snapshot.
+
+    Redis holds the live event stream (fast, TTL'd); this table is the DB
+    fallback so ``GET /api/v1/generation/status/{id}`` still reports real
+    terminal state after a Redis flush or backend restart.  The payload is
+    the serialized ``progress_service.GenerationProgress`` blob keyed by the
+    string project id used by the API layer.
+    """
+
+    __tablename__ = "generation_progress"
+
+    project_id = Column(String(255), primary_key=True)
+    status = Column(String(50), nullable=False, default="pending", index=True)
+    progress_pct = Column(Integer, nullable=False, default=0)
+    current_stage = Column(String(100))
+    attempt_number = Column(Integer, nullable=False, default=1)
+    error_message = Column(Text)
+    progress_json = Column(JSON, nullable=False)
+    updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())

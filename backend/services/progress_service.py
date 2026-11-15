@@ -43,6 +43,12 @@ def utcnow_iso() -> str:
     return datetime.now(timezone.utc).replace(microsecond=0).isoformat()
 
 
+#: Default per-run wall-clock budget used to interpolate *live* progress
+#: between node completions (the pipeline takes minutes; the last recorded
+#: event alone would keep /status frozen until the next stage finishes).
+DEFAULT_STAGE_TIMEOUT_SECONDS = 180
+
+
 class ProgressEvent(BaseModel):
     """One structured progress event emitted during a generation run."""
 
@@ -69,6 +75,10 @@ class GenerationProgress(BaseModel):
     finished_at: str | None = None
     error_message: str | None = None
     events: list[ProgressEvent] = Field(default_factory=list)
+    #: Compact terminal outcome snapshot (success, attempt_number, scores...),
+    #: filled by the orchestrator when the run finishes; surfaced as
+    #: ProjectStatusResponse.result.
+    result_snapshot: dict[str, Any] | None = None
 
 
 class ProgressService:
@@ -87,6 +97,7 @@ class ProgressService:
         ttl_seconds: int = 24 * 3600,
         db_persist_hook: Callable[[GenerationProgress], Awaitable[None]] | None = None,
         db_load_hook: Callable[[str], Awaitable[dict[str, Any] | None]] | None = None,
+        live_stage_timeout_seconds: int = DEFAULT_STAGE_TIMEOUT_SECONDS,
     ):
         self._redis = redis_client
         self._redis_url = redis_url
@@ -97,6 +108,9 @@ class ProgressService:
         # offline tests hermetic.  Bounded to avoid unbounded growth.
         self._store: dict[str, GenerationProgress] = {}
         self._max_projects = 512
+        #: Wall-clock budget per stage used by :func:`live_progress_pct`
+        #: (tests shrink it; production default matches the 3-min estimate).
+        self.live_stage_timeout_seconds = max(int(live_stage_timeout_seconds), 1)
 
     # ------------------------------------------------------------------
     # Backend plumbing
@@ -147,11 +161,16 @@ class ProgressService:
             except Exception as e:
                 logger.warning("ProgressService: Redis write failed for %s: %s", progress.project_id, e)
 
+        # DB mirror: only terminal snapshots hit Postgres by default (one row
+        # per run, not one write per node event).  An injected hook keeps the
+        # legacy per-event behaviour available for callers that want it.
         if self._db_persist_hook is not None:
             try:
                 await self._db_persist_hook(progress)
             except Exception as e:
                 logger.warning("ProgressService: DB persist hook failed for %s: %s", progress.project_id, e)
+        elif progress.status in (STATUS_COMPLETED, STATUS_FAILED):
+            await self.save_to_db(progress)
 
     async def _read_backend(self, project_id: str) -> GenerationProgress | None:
         """Read one snapshot: Redis first, then the injected DB hook."""
@@ -173,6 +192,10 @@ class ProgressService:
                     return GenerationProgress.model_validate(data)
             except Exception as e:
                 logger.warning("ProgressService: DB load hook failed for %s: %s", project_id, e)
+        else:
+            record = await self.load_from_db(project_id)
+            if record is not None:
+                return record
         return None
 
     # ------------------------------------------------------------------
@@ -186,9 +209,16 @@ class ProgressService:
         another worker still sees real progress.
         """
         local = self._store.get(project_id)
-        if local is not None:
+        remote = await self._read_backend(project_id)
+        if remote is not None:
+            # A record written by another worker/process wins over a stale
+            # local stub as long as this process has no live run for it.
+            if local is None or (
+                local.status == STATUS_PENDING and remote.status != STATUS_PENDING
+            ):
+                return remote
             return local
-        return await self._read_backend(project_id)
+        return local
 
     async def record_event(self, project_id: str, event: ProgressEvent, *, user_id: str | None = None) -> GenerationProgress:
         """Append one event, recomputing aggregate fields, and persist it."""
@@ -255,6 +285,109 @@ class ProgressService:
                 await asyncio.to_thread(client.delete, self.redis_key(project_id))
             except Exception as e:  # pragma: no cover - infra-dependent
                 logger.warning("ProgressService: Redis delete failed for %s: %s", project_id, e)
+
+    # ------------------------------------------------------------------
+    # DB-backed persistence (Phase 7: survives Redis loss / TTL expiry)
+    # ------------------------------------------------------------------
+    async def save_to_db(self, progress: GenerationProgress) -> None:
+        """Upsert one snapshot into the Postgres ``generation_progress`` table.
+
+        Best-effort: any failure (DB offline, driver missing) is logged and
+        swallowed so callers inside the hot event path never break.
+        """
+        try:
+            from sqlalchemy import select
+
+            # Imported lazily: pulling in backend.db.session builds the DB
+            # engine, which explodes in minimal envs without a PG driver —
+            # exactly what save_to_db must tolerate offline.
+            from backend.db.session import AsyncSessionLocal
+            from backend.models.schemas import GenerationProgressRecord
+
+            payload = progress.model_dump(mode="json")
+            async with AsyncSessionLocal() as session:
+                existing = await session.get(GenerationProgressRecord, progress.project_id)
+                if existing is None:
+                    session.add(GenerationProgressRecord(progress_json=payload))
+                else:
+                    # Reassign a fresh dict so SQLAlchemy detects JSON mutation.
+                    existing.progress_json = payload
+                existing.status = progress.status
+                existing.progress_pct = progress.progress_pct
+                existing.current_stage = progress.current_stage
+                existing.attempt_number = progress.attempt_number
+                existing.error_message = progress.error_message
+                await session.commit()
+        except Exception as e:  # noqa: BLE001 - persistence must never raise
+            logger.warning("ProgressService: DB save failed for %s: %s", progress.project_id, e)
+
+    async def load_from_db(self, project_id: str) -> GenerationProgress | None:
+        """Load one snapshot from Postgres; None when absent or DB offline."""
+        try:
+            from backend.db.session import AsyncSessionLocal
+            from backend.models.schemas import GenerationProgressRecord
+
+            async with AsyncSessionLocal() as session:
+                record = await session.get(GenerationProgressRecord, project_id)
+            if record is None or not record.progress_json:
+                return None
+            return GenerationProgress.model_validate(record.progress_json)
+        except Exception as e:  # noqa: BLE001 - read fallback must never raise
+            logger.warning("ProgressService: DB load failed for %s: %s", project_id, e)
+            return None
+
+    async def list_project_ids_from_db(self) -> list[str]:
+        """All project ids that have persisted progress (empty when DB offline)."""
+        try:
+            from sqlalchemy import select
+
+            from backend.db.session import AsyncSessionLocal
+            from backend.models.schemas import GenerationProgressRecord
+
+            async with AsyncSessionLocal() as session:
+                result = await session.execute(select(GenerationProgressRecord.project_id))
+            return [row[0] for row in result.all()]
+        except Exception as e:  # noqa: BLE001
+            logger.warning("ProgressService: DB id listing failed: %s", e)
+            return []
+
+    async def get_progress_with_fallback(self, project_id: str) -> GenerationProgress | None:
+        """Full read chain: memory → Redis → Postgres. None when truly unknown."""
+        found = await self.get_progress(project_id)
+        if found is not None:
+            return found
+        return await self.load_from_db(project_id)
+
+
+def live_progress_pct(
+    progress: GenerationProgress, *, stage_timeout_seconds: int = DEFAULT_STAGE_TIMEOUT_SECONDS
+) -> int:
+    """Interpolated progress percentage including work in flight.
+
+    Terminal states report their recorded value verbatim. While running, the
+    fraction of the current stage's budget elapsed since the last event is
+    credited toward the next stage boundary — strictly capped below it, so the
+    number only ever reaches a boundary when the stage really completed.
+    """
+    if progress.status in (STATUS_COMPLETED, STATUS_FAILED):
+        return progress.progress_pct
+
+    base = progress.progress_pct
+    if base >= 100:
+        return base
+
+    try:
+        updated = datetime.fromisoformat(progress.updated_at)
+    except ValueError:  # pragma: no cover - defensive
+        return base
+    if updated.tzinfo is None:
+        updated = updated.replace(tzinfo=timezone.utc)
+    elapsed = max(0.0, (datetime.now(timezone.utc) - updated).total_seconds())
+
+    timeout = max(int(stage_timeout_seconds), 1)
+    window = 100 - base
+    increment = min(int(elapsed / timeout * window), max(window - 1, 0))
+    return base + increment
 
 
 # ----------------------------------------------------------------------

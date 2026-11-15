@@ -644,9 +644,113 @@ class OrchestratorService:
         except Exception as e:  # pragma: no cover - defensive
             logger.warning("Progress start_run failed for %s: %s", project_id, e)
 
-        result = await self.graph.ainvoke(initial_state, config)
+        result: dict | None = None
+        try:
+            result = await self.graph.ainvoke(initial_state, config)
+        finally:
+            # Phase 7: mirror the terminal outcome (success + final state
+            # snapshot) into the progress store so /status never races the
+            # node wrapper, and the DB fallback row is written even when the
+            # graph raised before reaching commit/fail.
+            try:
+                await self._finalize_progress(project_id, result)
+            except Exception as e:  # pragma: no cover - defensive
+                logger.warning("Progress finalize failed for %s: %s", project_id, e)
 
         return result
+
+    async def _finalize_progress(self, project_id: str, result: dict | None) -> None:
+        """Write the terminal progress event from the run's final state."""
+        success = bool(result.get("success")) if result else False
+        error_message = (result or {}).get("error_message")
+        await self._progress.finalize(
+            project_id,
+            success=success,
+            error_message=None if success else (error_message or "Generation failed"),
+        )
+        if result:
+            progress = self._progress._store.get(project_id)
+            if progress is not None:
+                progress.result_snapshot = {
+                    "success": bool(result.get("success")),
+                    "attempt_number": int(result.get("attempt_number") or 1),
+                    "error_message": result.get("error_message"),
+                    "stability_score": getattr(result.get("playtest_report"), "stability_score", None),
+                    "qa_passed": getattr(result.get("qa_report"), "passed", None),
+                    "generated_files": len(result.get("generated_files") or []),
+                    "workspace_path": result.get("workspace_path"),
+                }
+                await self._progress._write_backend(progress)
+
+    async def get_status(self, project_id: str) -> dict[str, Any] | None:
+        """Real status view of one generation run (Phase 7).
+
+        Merge order: durable Redis/DB progress record first; a live checkpoint
+        read (same process, freshest) overrides it; the in-flight interpolation
+        only applies while the run is still going.  Returns ``None`` when the
+        project id is unknown to both stores — the API layer turns that into 404.
+        """
+        progress = await self._progress.get_progress_with_fallback(project_id)
+        if progress is None:
+            return None
+
+        status = progress.status
+        attempt_number = max(1, progress.attempt_number)
+        error_message = progress.error_message
+        result = progress.result_snapshot
+        logs = [e.message for e in progress.events[-50:] if e.message]
+
+        try:
+            checkpoint = await self.get_checkpoint_state(progress.user_id or "default_user", project_id)
+        except Exception as e:  # checkpointer offline → durable record wins
+            logger.debug("get_status checkpoint read failed for %s: %s", project_id, e)
+            checkpoint = None
+
+        if checkpoint:
+            cp_success = bool(checkpoint.get("success"))
+            cp_error = checkpoint.get("error_message")
+            attempt_number = max(attempt_number, int(checkpoint.get("attempt_number") or 1))
+            finished = cp_success or bool(cp_error)
+            if cp_success:
+                status = STATUS_COMPLETED
+            elif cp_error:
+                status = STATUS_FAILED
+            elif progress.status == STATUS_PENDING:
+                status = STATUS_RUNNING
+            else:
+                status = progress.status
+            if cp_error:
+                error_message = cp_error
+            cp_logs = [str(m) for m in (checkpoint.get("messages") or [])][-50:]
+            if cp_logs:
+                logs = cp_logs
+            if finished:
+                result = {
+                    "success": cp_success,
+                    "attempt_number": attempt_number,
+                    "error_message": cp_error,
+                    "stability_score": getattr(checkpoint.get("playtest_report"), "stability_score", None),
+                    "qa_passed": getattr(checkpoint.get("qa_report"), "passed", None),
+                    "generated_files": len(checkpoint.get("generated_files") or []),
+                    "workspace_path": checkpoint.get("workspace_path"),
+                }
+
+        if status == STATUS_RUNNING:
+            progress_pct = live_progress_pct(progress)
+        elif status == STATUS_COMPLETED:
+            progress_pct = 100
+        else:
+            progress_pct = progress.progress_pct
+
+        return {
+            "status": status,
+            "progress": progress_pct,
+            "current_stage": progress.current_stage,
+            "attempt_number": attempt_number,
+            "logs": logs,
+            "error_message": error_message,
+            "result": result,
+        }
 
     @staticmethod
     def thread_id(user_id: str, project_id: str) -> str:

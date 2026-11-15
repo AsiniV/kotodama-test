@@ -363,6 +363,7 @@ class ProjectStatusResponse(BaseModel):
     current_agent: Optional[str] = None
     logs: list[str] = []
     attempt_number: int = 1
+    error_message: Optional[str] = None
     result: Optional[dict] = None
 
 
