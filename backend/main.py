@@ -78,7 +78,13 @@ def create_app() -> FastAPI:
             content={"success": False, "message": f"Internal server error: {str(exc)}"},
         )
     
-    # Health check endpoint
+    # Health check endpoints (Phase 7): the legacy root /health stays for the
+    # nginx container probe; /api/v1/health is what docker-compose probes for
+    # the backend container and reports real per-component status.
+    from backend.api import health as health_api
+
+    app.include_router(health_api.router, prefix="/api/v1", tags=["health"])
+
     @app.get("/health")
     async def health_check():
         return {"status": "healthy", "version": settings.app_version}
