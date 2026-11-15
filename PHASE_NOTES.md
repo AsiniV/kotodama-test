@@ -304,3 +304,38 @@ fix: 11/11 OK offline; full suite: 110 passed.
    real `backend/agents/playtester.py`; root-level legacy test scripts
    (`test_phase8_*.py`, `test_phase9_*.py`) are not collected by pytest config
    but still clutter the repo (cleanup phase).
+
+## Phase 7 — Real status + health (this phase)
+
+**What was built:** progress events are written to Redis (`generation:progress:{id}`,
+TTL'd) on every orchestrator node transition and mirrored to Postgres at run end;
+`GET /api/v1/generation/status/{id}` reads the real merged view (memory → Redis →
+Postgres, plus live checkpoint when reachable, with wall-clock interpolation while
+running) and returns 404 for unknown ids; `GET /api/v1/health` (new
+`backend/api/health.py`, mounted in `main.py`) answers HTTP 200 with per-component
+status and never crashes when infra is offline — matching the docker-compose
+backend healthcheck (`curl -f http://localhost:8000/api/v1/health`). All mock/stub
+bodies in `generation.py` are gone: `/download` really zips `godot_project/`
+(404 unknown / 501 not-built), `/preview` refuses to fake a URL without an export,
+DELETE really removes the workspace and clears durable progress. Tests:
+`tests/test_generation_status_health.py` (16 tests, fully offline); Makefile target
+`test-status-health` wired into `verify-offline`.
+
+**Adjacent bugs noticed (NOT fixed — other phases' scope):**
+1. Pre-existing test failure (verified on the clean tree before this phase):
+   `tests/test_orchestration_persistence.py::test_ensure_checkpointer_falls_back_when_postgres_unreachable`
+   asserts via `caplog` that a fallback warning is logged, but the log record is
+   emitted before the caplog handler attaches its level (or under a logger name
+   mismatch), so the assertion fails even though the behaviour is correct. The
+   test should assert on the returned checkpointer type instead of log capture.
+2. Carried over from Phase 5 note #1: `backend/api/generation.py` still
+   re-implements the Two-Attempt billing rule (`should_charge = success or
+   attempt_number >= 2`) in the API layer by reading raw state keys. Owned by
+   the billing phase; left untouched here to avoid drive-by refactors.
+3. `ProgressService._write_backend` prunes its in-memory store with operator
+   precedence bug `-self._max_projects // 2` (negation applied before floor
+   division), pruning zero entries when `_max_projects` is small. Harmless at
+   the default 512 but worth fixing in the hardening phase.
+4. `docker-compose.yml` nginx container still probes the legacy root `/health`
+   while the backend service probes `/api/v1/health`; both endpoints exist, but
+   the duplication belongs to the deployment-cleanup phase.

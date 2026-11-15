@@ -8,7 +8,7 @@
 
 .PHONY: help setup dev dev-backend dev-frontend test build deploy backup clean lint migrate \
         docker-up docker-down docker-up-infra logs ollama-pull minio-create-buckets \
-        test-offline smoke-agents test-workspace test-orchestration verify-offline
+        test-offline smoke-agents test-workspace test-orchestration test-status-health verify-offline
 
 # -----------------------------------------------------------------------------
 # HELP
@@ -38,6 +38,7 @@ help:
 	@echo "  minio-create-buckets Create MinIO buckets (kotodama-assets, kotodama-builds)"
 	@echo "  test-workspace       Phase 4 offline workspace paths/git tests"
 	@echo "  test-orchestration   Phase 5 offline orchestrator dry-run tests (stub agents)"
+	@echo "  test-status-health   Phase 7 offline real status/health endpoint tests"
 	@echo "  verify-offline       Full offline verification (tests + smoke + workspace)"
 
 # -----------------------------------------------------------------------------
@@ -111,7 +112,12 @@ test-orchestration:
 	@echo "Running offline orchestrator dry-run tests (stub agents)..."
 	python -m pytest tests/test_orchestration_dryrun.py -v -p no:libtmux
 
-verify-offline: test-offline smoke-agents test-workspace test-orchestration
+# Phase 7: real /status + /api/v1/health endpoint tests (mocked Redis/DB).
+test-status-health:
+	@echo "Running offline status/health API tests (mocked Redis/DB)..."
+	python -m pytest tests/test_generation_status_health.py -v -p no:libtmux
+
+verify-offline: test-offline smoke-agents test-workspace test-orchestration test-status-health
 	@echo "Offline verification complete."
 
 # -----------------------------------------------------------------------------
