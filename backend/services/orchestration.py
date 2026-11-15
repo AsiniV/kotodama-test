@@ -49,6 +49,13 @@ from backend.agents.playtester import AIPlaytesterAgent
 from backend.agents.qa import QAAgent
 from backend.agents.quest_designer import QuestDesignerAgent
 from backend.core import paths
+from backend.services.progress_service import (
+    STATUS_COMPLETED,
+    STATUS_FAILED,
+    STATUS_RUNNING,
+    ProgressEvent,
+    ProgressService,
+)
 from backend.schemas.agent_schemas import (
     ArchitectInput,
     CoderInput,
@@ -194,6 +201,99 @@ def _level_parameters(plan: Any) -> dict | None:
     return None
 
 
+# ----------------------------------------------------------------------
+# Phase 7: progress-event plumbing
+# ----------------------------------------------------------------------
+#: Pipeline node order — the baseline for progress percentages.
+#: ``persist_files`` is a sub-step of the coder stage; ``commit`` finishes at 100%.
+PIPELINE_STAGES: tuple[str, ...] = (
+    "designer",
+    "architect",
+    "quest_designer",
+    "dialogue_writer",
+    "level_generator",
+    "art_director",
+    "coder",
+    "qa",
+    "playtest",
+    "localization",
+    "commit",
+)
+
+#: Node name -> canonical stage name (graph nodes vs. reported stages).
+NODE_TO_STAGE: dict[str, str] = {
+    **{node: node for node in PIPELINE_STAGES},
+    "persist_files": "coder",
+    "rollback": "failed",
+    "fail": "failed",
+}
+
+#: Fraction of the total run completed once a stage's node has finished.
+STAGE_COMPLETION_PCT: dict[str, int] = {
+    "designer": 9,
+    "architect": 18,
+    "quest_designer": 27,
+    "dialogue_writer": 36,
+    "level_generator": 45,
+    "art_director": 54,
+    # coder + persist_files together reach 70% (persist adds 5%).
+    "coder": 65,
+    "qa": 75,
+    "playtest": 85,
+    "localization": 95,
+    "commit": 100,
+}
+
+
+def _wizard_field(state: GenerationState | dict, name: str, default: Any = None) -> Any:
+    """Read a field off the state's wizard input (model or raw dict)."""
+    wizard = state.get("wizard_input") if isinstance(state, dict) else None
+    if wizard is None:
+        return default
+    if isinstance(wizard, WizardInput):
+        return getattr(wizard, name, default)
+    if isinstance(wizard, dict):
+        return wizard.get(name, default)
+    return getattr(wizard, name, default)
+
+
+def compute_progress_pct(node_name: str, state: GenerationState) -> int:
+    """Real completion percentage after ``node_name`` finished running ``state``.
+
+    Skippable stages (quests/dialogues/levels per the wizard config, art via
+    ``skip_agents``) contribute 0% so optional work never inflates progress;
+    terminal nodes map to their outcome (commit→100, fail/rollback→as-is).
+    """
+    if node_name == "persist_files":
+        return STAGE_COMPLETION_PCT["coder"] + 5
+    if node_name in ("fail", "rollback"):
+        # Terminal failure: keep whatever real progress was reached.
+        return max(0, min(STAGE_COMPLETION_PCT.get("playtest", 85) - 10, 100))
+    if node_name == "commit":
+        return 100
+
+    gdd = state.get("gdd")
+    quest_complexity = _wizard_field(state, "quest_complexity") or getattr(gdd, "quest_complexity", "none")
+    dialogue_depth = _wizard_field(state, "dialogue_depth") or getattr(gdd, "dialogue_depth", "none")
+
+    skip = set(state.get("skip_agents") or [])
+    skipped: set[str] = {"level_generator"}
+    if quest_complexity == "none":
+        skipped.add("quest_designer")
+    if dialogue_depth == "none":
+        skipped.add("dialogue_writer")
+    if "art_director" in skip:
+        skipped.add("art_director")
+
+    active = [s for s in PIPELINE_STAGES if s not in skipped]
+    step = 100 // len(active)
+    try:
+        idx = active.index(node_name)
+    except ValueError:  # unknown node → conservative fallback
+        return STAGE_COMPLETION_PCT.get(node_name, 0)
+    return min(step * (idx + 1), 100)
+
+
 class OrchestratorService:
     """Orchestrates the multi-agent generation pipeline."""
 
@@ -205,6 +305,7 @@ class OrchestratorService:
         lore_rag: Any | None = None,
         art_pipeline: Any | None = None,
         checkpointer: Any | None = None,
+        progress_service: ProgressService | None = None,
     ):
         self.designer = GameDesignerAgent()
         self.architect = ArchitectAgent()
@@ -227,7 +328,48 @@ class OrchestratorService:
         self._checkpointer_override = checkpointer
         self._checkpointer: Any | None = None
         self._checkpoint_ctx: Any | None = None
+        # Phase 7: progress events (Redis + in-memory fallback); injectable for tests.
+        self.progress_service = progress_service or _default_progress_service()
         self.graph = self._build_graph(self._sync_checkpointer())
+
+    # ------------------------------------------------------------------
+    # Progress events (Phase 7)
+    # ------------------------------------------------------------------
+    @property
+    def _progress(self) -> ProgressService:
+        """Progress service, lazily defaulted for ``__new__``-built instances."""
+        svc = getattr(self, "progress_service", None)
+        if svc is None:
+            svc = _default_progress_service()
+            self.progress_service = svc
+        return svc
+
+    async def _emit_progress(
+        self,
+        node_name: str,
+        state: dict,
+        update: dict | None,
+        *,
+        project_id: str,
+        user_id: str,
+        status: str = STATUS_RUNNING,
+        error_message: str | None = None,
+    ) -> None:
+        """Best-effort progress event write; never breaks the pipeline."""
+        merged = {**state, **(update or {})}
+        attempt = max(1, int(merged.get("attempt_number") or 1))
+        event = ProgressEvent(
+            stage=NODE_TO_STAGE.get(node_name, node_name),
+            progress_pct=compute_progress_pct(node_name, cast(GenerationState, merged)),
+            message="; ".join(str(m) for m in (merged.get("messages") or []))[-500:],
+            status=status,
+            attempt_number=attempt,
+            error_message=error_message,
+        )
+        try:
+            await self._progress.record_event(project_id, event, user_id=user_id)
+        except Exception as e:  # pragma: no cover - defensive
+            logger.warning("Progress emit failed for %s@%s: %s", project_id, node_name, e)
 
     # ------------------------------------------------------------------
     # Checkpointer lifecycle (Phase 6)
@@ -305,26 +447,32 @@ class OrchestratorService:
     # ------------------------------------------------------------------
     # Graph construction
     # ------------------------------------------------------------------
+    #: Nodes wrapped with progress emission (Phase 7).
+    _PROGRESS_NODES: tuple[str, ...] = (
+        "designer",
+        "architect",
+        "quest_designer",
+        "dialogue_writer",
+        "level_generator",
+        "art_director",
+        "coder",
+        "persist_files",
+        "qa",
+        "playtest",
+        "localization",
+        "commit",
+        "rollback",
+        "fail",
+    )
+
     def _build_graph(self, checkpointer: Any | None = None) -> StateGraph:
         """Build the LangGraph workflow with explicit error edges."""
         builder = StateGraph(GenerationState)
 
-        # Production nodes.
-        builder.add_node("designer", self._run_designer)
-        builder.add_node("architect", self._run_architect)
-        builder.add_node("quest_designer", self._run_quest_designer)
-        builder.add_node("dialogue_writer", self._run_dialogue_writer)
-        builder.add_node("level_generator", self._run_level_generator)
-        builder.add_node("art_director", self._run_art_director)
-        builder.add_node("coder", self._run_coder)
-        builder.add_node("persist_files", self._run_persist_files)
-        builder.add_node("qa", self._run_qa)
-        builder.add_node("playtest", self._run_playtest)
-        builder.add_node("localization", self._run_localization)
-        # Terminal / control nodes.
-        builder.add_node("commit", self._run_commit)
-        builder.add_node("rollback", self._run_rollback)
-        builder.add_node("fail", self._run_fail)
+        # Production nodes (each wrapped so its completion emits a real
+        # progress event to Redis/DB — Phase 7).
+        for node_name in self._PROGRESS_NODES:
+            builder.add_node(node_name, self._with_progress(node_name))
 
         builder.add_edge(START, "designer")
 
@@ -368,6 +516,42 @@ class OrchestratorService:
         # attempt counting uses local copies inside _run_coder.
         # Phase 6: compiled WITH a checkpointer so state survives restarts.
         return builder.compile(checkpointer=checkpointer)
+
+    def _with_progress(self, node_name: str):
+        """Wrap a node callable so its completion emits a real progress event.
+
+        The wrapper is transparent: it returns the inner node's update dict
+        unchanged and never lets a progress-bookkeeping failure abort the run.
+        ``project_id``/``user_id`` come from the run context set by
+        :meth:`run_generation` / :meth:`resume_generation`; when absent (e.g.
+        direct unit-test calls of the graph), the wizard project name is used
+        as a fallback id.
+        """
+        inner = getattr(self, f"_run_{node_name}")
+
+        async def wrapped(state: GenerationState) -> dict:
+            update = await inner(state)
+            ctx = getattr(self, "_progress_ctx", None)
+            project_id = (ctx or {}).get("project_id") or _wizard_field(state, "project_name")
+            user_id = (ctx or {}).get("user_id") or "default_user"
+            if node_name == "commit":
+                status = STATUS_COMPLETED if update.get("success") else STATUS_FAILED
+            elif node_name in ("rollback", "fail"):
+                status = STATUS_FAILED
+            else:
+                status = STATUS_RUNNING
+            await self._emit_progress(
+                node_name,
+                state,
+                update,
+                project_id=project_id,
+                user_id=user_id,
+                status=status,
+                error_message=update.get("error_message"),
+            )
+            return update
+
+        return wrapped
 
     # ------------------------------------------------------------------
     # Routers
@@ -450,6 +634,16 @@ class OrchestratorService:
         }
 
         config = {"configurable": {"thread_id": self.thread_id(user_id, project_id)}}
+
+        # Phase 7: publish the run context so the progress-wrapped nodes can
+        # tag their events with the real project/user ids, and open a fresh
+        # progress record (status "running", 0%) before the first node runs.
+        self._progress_ctx = {"project_id": project_id, "user_id": user_id}
+        try:
+            await self._progress.start_run(project_id, user_id=user_id)
+        except Exception as e:  # pragma: no cover - defensive
+            logger.warning("Progress start_run failed for %s: %s", project_id, e)
+
         result = await self.graph.ainvoke(initial_state, config)
 
         return result
@@ -484,6 +678,9 @@ class OrchestratorService:
         snapshot = await self.graph.aget_state(config)
         if not snapshot.values:
             return None
+        # Phase 7: re-publish the run context so resumed nodes keep emitting
+        # progress events under the original project id.
+        self._progress_ctx = {"project_id": project_id, "user_id": user_id}
         return cast(GenerationState, await self.graph.ainvoke(None, config))
 
     # ------------------------------------------------------------------
@@ -876,6 +1073,13 @@ def _default_art_pipeline() -> Any:
     from backend.services.art_pipeline import get_art_pipeline_service
 
     return get_art_pipeline_service()
+
+
+def _default_progress_service() -> Any:
+    """Lazy import keeps the progress singleton out of module import time."""
+    from backend.services.progress_service import get_progress_service
+
+    return get_progress_service()
 
 
 # Singleton instance
