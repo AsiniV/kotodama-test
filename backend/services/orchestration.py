@@ -1,12 +1,12 @@
 """
 Complete LangGraph orchestration for all 11 agents.
 
-Pipeline (Phase 5 — orchestrator wiring):
+Pipeline (Phase 6 — persistence + checkpoint):
 
 START → designer → architect → quest_designer → dialogue_writer → level_generator
-      → art_director → coder → qa → playtest → localization → commit → END
-                    ↑                                            │
-                    └──────────── retry (attempt < MAX_ATTEMPTS)─┘
+      → art_director → coder → persist_files → qa → playtest → localization → commit → END
+                    ↑                                                       │
+                    └──────────── retry (attempt < MAX_ATTEMPTS)───────────┘
       any node failure → fail → END       critical failure after retries → rollback → END
 
 Wiring rules enforced here:
@@ -18,16 +18,23 @@ Wiring rules enforced here:
   downstream agents.
 - Localization runs AFTER playtest and is NON-BLOCKING: its failures (including
   missing keys) are logged as warnings and never route to retry/rollback.
-- The graph has NO checkpointer: nodes must not mutate state in place
-  (LangGraph merges returned dicts only), so attempt counting happens on local
-  copies inside the coder node.
+- Nodes must not mutate state in place (LangGraph merges returned dicts only),
+  so attempt counting happens on local copies inside the coder node.
+- Persistence (Phase 6): the ``persist_files`` node writes the coder's
+  GeneratedFile list to disk under ``godot_project/`` right after the coder,
+  and the graph is compiled WITH a checkpointer — Postgres-backed
+  (langgraph-checkpoint-postgres) when the DB is reachable, MemorySaver
+  fallback otherwise — so generation state survives backend restarts and can
+  be resumed per thread via :meth:`OrchestratorService.resume_generation`.
 """
 
 import json
 import logging
+import re
 from pathlib import Path
-from typing import Annotated, Any, Literal, TypedDict
+from typing import Annotated, Any, Literal, TypedDict, cast
 
+from langgraph.checkpoint.memory import MemorySaver
 from langgraph.graph import END, START, StateGraph
 from langgraph.graph.message import add_messages
 
@@ -41,6 +48,7 @@ from backend.agents.localization import LocalizationManagerAgent
 from backend.agents.playtester import AIPlaytesterAgent
 from backend.agents.qa import QAAgent
 from backend.agents.quest_designer import QuestDesignerAgent
+from backend.core import paths
 from backend.schemas.agent_schemas import (
     ArchitectInput,
     CoderInput,
@@ -76,6 +84,28 @@ logger = logging.getLogger("kotodama.services.orchestration")
 # failure exhausts retries and routes to rollback.
 MAX_ATTEMPTS = 2
 
+#: Path traversal guard for LLM-supplied file paths (persist_files node).
+_UNSAFE_PATH_SEGMENT_RE = re.compile(r"(^|/)(\.\.|/|\\)")
+
+
+def _is_safe_relative_path(path: str) -> bool:
+    """True when ``path`` is a clean relative path (no ``..``, absolute or drive)."""
+    if not path or not path.strip():
+        return False
+    normalized = path.replace("\\", "/")
+    if normalized.startswith("/") or re.match(r"^[A-Za-z]:", normalized):
+        return False
+    return _UNSAFE_PATH_SEGMENT_RE.search(normalized) is None
+
+
+def checkpoint_postgres_dsn(database_url: str) -> str:
+    """Translate the SQLAlchemy async DSN into a psycopg connection string.
+
+    ``postgresql+asyncpg://...`` (or ``+psycopg``) becomes plain
+    ``postgresql://...`` as required by langgraph-checkpoint-postgres.
+    """
+    return re.sub(r"^postgresql(\+[a-z0-9_]+)?", "postgresql", database_url.strip(), flags=re.IGNORECASE)
+
 
 class GenerationState(TypedDict):
     """State passed through the generation pipeline."""
@@ -92,6 +122,8 @@ class GenerationState(TypedDict):
     level_layout: LevelLayout | dict | None
     game_ir: GameIR | dict | None
     generated_files: list[GeneratedFile]
+    persisted_files: list[str]
+    persist_errors: list[str]
     qa_report: QAReport | None
     playtest_report: PlaytestReport | None
     localization_output: LocalizationOutput | None
@@ -172,6 +204,7 @@ class OrchestratorService:
         analyzer: Any | None = None,
         lore_rag: Any | None = None,
         art_pipeline: Any | None = None,
+        checkpointer: Any | None = None,
     ):
         self.designer = GameDesignerAgent()
         self.architect = ArchitectAgent()
@@ -188,13 +221,91 @@ class OrchestratorService:
         self.analyzer = analyzer if analyzer is not None else _default_analyzer()
         self.lore_rag = lore_rag if lore_rag is not None else _default_lore_rag()
         self.art_pipeline = art_pipeline if art_pipeline is not None else _default_art_pipeline()
+        # Phase 6: Postgres-backed checkpointer (AsyncPostgresSaver) when the
+        # DB is reachable; MemorySaver fallback otherwise so single-process
+        # runs still checkpoint in memory.  ``None`` disables checkpointing.
+        self._checkpointer_override = checkpointer
+        self._checkpointer: Any | None = None
+        self._checkpoint_ctx: Any | None = None
+        self.graph = self._build_graph(self._sync_checkpointer())
 
-        self.graph = self._build_graph()
+    # ------------------------------------------------------------------
+    # Checkpointer lifecycle (Phase 6)
+    # ------------------------------------------------------------------
+    @property
+    def _cp_override(self) -> Any | None:
+        """Injected checkpointer (lazily defaulted for __new__-built instances)."""
+        return getattr(self, "_checkpointer_override", None)
+
+    def _sync_checkpointer(self) -> Any:
+        """Return a ready-to-use sync checkpointer (never touches the network).
+
+        Uses an explicitly injected checkpointer when provided; otherwise
+        MemorySaver.  The Postgres saver is set up asynchronously by
+        :meth:`ensure_checkpointer` at run time — doing it here would require
+        an event loop during construction/import.
+        """
+        if self._cp_override is not None:
+            return self._cp_override
+        return MemorySaver()
+
+    async def ensure_checkpointer(self) -> Any:
+        """Resolve the run-time checkpointer exactly once (Postgres → fallback).
+
+        Tries ``langgraph.checkpoint.postgres.aio.AsyncPostgresSaver`` against
+        the configured DSN (runs its ``setup()`` migrations); on any failure
+        (DB down, driver missing) logs a warning and falls back to the
+        in-memory checkpointer the graph was compiled with.
+        """
+        resolved = getattr(self, "_checkpointer", None)
+        if resolved is not None:
+            return resolved
+
+        override = self._cp_override
+        if override is None:
+            from backend.core.config import get_settings
+
+            settings = get_settings()
+            if settings.checkpointer_enabled:
+                dsn = settings.langgraph_checkpoint_dsn or checkpoint_postgres_dsn(settings.database_url)
+                try:
+                    # Imported lazily: psycopg may be absent in minimal/offline envs.
+                    from langgraph.checkpoint.postgres.aio import AsyncPostgresSaver
+
+                    ctx = AsyncPostgresSaver.from_conn_string(dsn)
+                    saver = await ctx.__aenter__()
+                    await saver.setup()
+                    self._checkpoint_ctx = ctx
+                    override = saver
+                    logger.info("Checkpointer: AsyncPostgresSaver active")
+                except Exception as e:
+                    logger.warning(
+                        "Checkpointer: Postgres unavailable (%s); falling back to MemorySaver", e
+                    )
+
+        if override is None:
+            override = self._sync_checkpointer()
+
+        # Re-compile only if the resolved saver differs from the compile-time one.
+        if override is not self.graph.checkpointer:
+            self.graph = self._build_graph(override)
+        self._checkpointer = override
+        return override
+
+    async def close(self) -> None:
+        """Release the Postgres checkpoint connection (if one is open)."""
+        if getattr(self, "_checkpoint_ctx", None) is not None:
+            try:
+                await self._checkpoint_ctx.__aexit__(None, None, None)
+            except Exception:
+                logger.exception("Checkpointer close failed")
+            self._checkpoint_ctx = None
+        self._checkpointer = None
 
     # ------------------------------------------------------------------
     # Graph construction
     # ------------------------------------------------------------------
-    def _build_graph(self) -> StateGraph:
+    def _build_graph(self, checkpointer: Any | None = None) -> StateGraph:
         """Build the LangGraph workflow with explicit error edges."""
         builder = StateGraph(GenerationState)
 
@@ -206,6 +317,7 @@ class OrchestratorService:
         builder.add_node("level_generator", self._run_level_generator)
         builder.add_node("art_director", self._run_art_director)
         builder.add_node("coder", self._run_coder)
+        builder.add_node("persist_files", self._run_persist_files)
         builder.add_node("qa", self._run_qa)
         builder.add_node("playtest", self._run_playtest)
         builder.add_node("localization", self._run_localization)
@@ -225,7 +337,8 @@ class OrchestratorService:
             ("dialogue_writer", "level_generator"),
             ("level_generator", "art_director"),
             ("art_director", "coder"),
-            ("coder", "qa"),
+            ("coder", "persist_files"),
+            ("persist_files", "qa"),
             ("qa", "playtest"),
         ):
             builder.add_conditional_edges(
@@ -251,9 +364,10 @@ class OrchestratorService:
         builder.add_edge("rollback", END)
         builder.add_edge("fail", END)
 
-        # No checkpointer: nodes must not mutate state in place (see module
-        # docstring); attempt counting uses local copies inside _run_coder.
-        return builder.compile()
+        # Nodes must not mutate state in place (see module docstring);
+        # attempt counting uses local copies inside _run_coder.
+        # Phase 6: compiled WITH a checkpointer so state survives restarts.
+        return builder.compile(checkpointer=checkpointer)
 
     # ------------------------------------------------------------------
     # Routers
@@ -301,7 +415,11 @@ class OrchestratorService:
     # Entry point
     # ------------------------------------------------------------------
     async def run_generation(self, wizard_input: dict | WizardInput, user_id: str, project_id: str) -> GenerationState:
-        """Run the full generation pipeline."""
+        """Run the full generation pipeline (checkpointed under a stable thread id)."""
+        # Resolve the Postgres checkpointer (or MemorySaver fallback) before
+        # invoking so state persists across restarts when the DB is up.
+        await self.ensure_checkpointer()
+
         # Create workspace
         workspace_path = await self.workspace_manager.create_workspace(project_id, user_id)
 
@@ -319,6 +437,8 @@ class OrchestratorService:
             "level_layout": None,
             "game_ir": None,
             "generated_files": [],
+            "persisted_files": [],
+            "persist_errors": [],
             "qa_report": None,
             "playtest_report": None,
             "localization_output": None,
@@ -329,10 +449,42 @@ class OrchestratorService:
             "skip_agents": [],
         }
 
-        config = {"configurable": {"thread_id": f"{user_id}_{project_id}"}}
+        config = {"configurable": {"thread_id": self.thread_id(user_id, project_id)}}
         result = await self.graph.ainvoke(initial_state, config)
 
         return result
+
+    @staticmethod
+    def thread_id(user_id: str, project_id: str) -> str:
+        """Checkpoint thread id for one generation (stable across restarts)."""
+        return f"{user_id}_{project_id}"
+
+    async def get_checkpoint_state(self, user_id: str, project_id: str) -> GenerationState | None:
+        """Read the latest checkpointed state for a thread ('' thread → None).
+
+        Lets the API layer report progress and lets :meth:`resume_generation`
+        continue an interrupted run after a backend restart.
+        """
+        await self.ensure_checkpointer()
+        config = {"configurable": {"thread_id": self.thread_id(user_id, project_id)}}
+        snapshot = await self.graph.aget_state(config)
+        if not snapshot.values:
+            return None
+        return cast(GenerationState, snapshot.values)
+
+    async def resume_generation(self, user_id: str, project_id: str) -> GenerationState | None:
+        """Resume the checkpointed run for this thread; None when nothing to resume.
+
+        Passing ``None`` as input makes LangGraph continue from the last
+        checkpoint (skipping already-completed nodes).  A thread that already
+        reached END simply returns its final state without re-running nodes.
+        """
+        await self.ensure_checkpointer()
+        config = {"configurable": {"thread_id": self.thread_id(user_id, project_id)}}
+        snapshot = await self.graph.aget_state(config)
+        if not snapshot.values:
+            return None
+        return cast(GenerationState, await self.graph.ainvoke(None, config))
 
     # ------------------------------------------------------------------
     # Production nodes (each calls exactly one agent with its Phase-3
@@ -505,6 +657,76 @@ class OrchestratorService:
         payload = ir.model_dump(mode="json")
         payload["files"] = [f.path for f in files]
         return payload
+
+    # ------------------------------------------------------------------
+    # Phase 6: disk persistence of the coder output
+    # ------------------------------------------------------------------
+    async def _run_persist_files(self, state: GenerationState) -> dict:
+        """Write the coder's GeneratedFile list into ``godot_project/`` on disk.
+
+        Runs right after the coder (and again on every retry).  Paths are
+        resolved relative to the workspace root so both the canonical
+        ``godot_project/...`` form and bare project-relative paths land inside
+        the Godot project; anything that would escape the workspace (``..``,
+        absolute paths) is rejected and recorded in ``persist_errors``.  A
+        file that cannot be written never aborts the pipeline — QA/playtest
+        still see the in-memory ``generated_files``.
+        """
+        files = list(state.get("generated_files") or [])
+        workspace_path = state.get("workspace_path")
+        if not files or not workspace_path:
+            return {
+                "persisted_files": [],
+                "persist_errors": [],
+                "messages": ["⏳ Persist: Skipped (no generated files)" if not files else "⚠ Persist: no workspace path"],
+            }
+
+        persisted: list[str] = []
+        errors: list[str] = []
+        for gen_file in files:
+            target = self._resolve_generated_path(Path(workspace_path), gen_file.path)
+            if target is None:
+                errors.append(gen_file.path)
+                logger.warning("Persist: rejected unsafe generated path %r", gen_file.path)
+                continue
+            try:
+                target.parent.mkdir(parents=True, exist_ok=True)
+                target.write_text(gen_file.content, encoding="utf-8")
+                persisted.append(str(target.relative_to(Path(workspace_path))))
+            except OSError as e:
+                errors.append(gen_file.path)
+                logger.warning("Persist: failed writing %s: %s", gen_file.path, e)
+
+        message = f"✓ Persist: {len(persisted)} files written to godot_project/"
+        if errors:
+            message += f" ({len(errors)} rejected)"
+        return {
+            "persisted_files": persisted,
+            "persist_errors": errors,
+            "messages": [message],
+        }
+
+    @staticmethod
+    def _resolve_generated_path(workspace: Path, rel_path: str) -> Path | None:
+        """Map a GeneratedFile path onto a safe location inside the workspace.
+
+        Returns ``None`` for traversal attempts (resolved path outside the
+        workspace) or empty paths.  Bare paths (``module_player.gd``) are
+        anchored at ``godot_project/`` per the canonical layout.
+        """
+        if not _is_safe_relative_path(rel_path):
+            return None
+        normalized = rel_path.replace("\\", "/").lstrip("/")
+        candidate = (workspace / normalized).resolve()
+        try:
+            candidate.relative_to(workspace.resolve())
+        except ValueError:
+            return None
+        if not normalized.startswith(f"{paths.GODOT_PROJECT_DIR_NAME}/"):
+            candidate = (workspace / paths.GODOT_PROJECT_DIR_NAME / normalized).resolve()
+            if candidate == workspace.resolve():
+                return None
+        return candidate
 
     async def _run_qa(self, state: GenerationState) -> dict:
         """Run QA agent (deterministic validation of the coder output)."""

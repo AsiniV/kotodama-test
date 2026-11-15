@@ -39,6 +39,19 @@ class Settings(BaseSettings):
     # PGVector for Lore RAG
     pgvector_dimension: int = 768
 
+    # LangGraph checkpointing (Phase 6): Postgres-backed graph state so a
+    # generation survives backend restarts.  The psycopg connection string is
+    # derived from ``database_url`` by default (driver prefix swapped); set
+    # this env var to point the checkpointer at a different DSN.
+    checkpointer_enabled: bool = Field(
+        default=True,
+        validation_alias=AliasChoices("checkpointer_enabled", "CHECKPOINTER_ENABLED"),
+    )
+    langgraph_checkpoint_dsn: str | None = Field(
+        default=None,
+        validation_alias=AliasChoices("langgraph_checkpoint_dsn", "LANGGRAPH_CHECKPOINT_DSN"),
+    )
+
     # Redis
     redis_url: str = "redis://redis:6379/0"
 
