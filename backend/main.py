@@ -36,6 +36,16 @@ async def lifespan(app: FastAPI):
     
     # Shutdown
     logger.info("Shutting down...")
+    # Phase 6: release the LangGraph Postgres checkpointer connection if the
+    # orchestrator singleton ever opened one (no-op for the MemorySaver fallback).
+    try:
+        from backend.services import orchestration as _orchestration_module
+
+        if _orchestration_module._orchestrator is not None:
+            await _orchestration_module._orchestrator.close()
+            logger.info("Checkpointer connections closed")
+    except Exception as e:  # pragma: no cover - defensive shutdown path
+        logger.warning("Checkpointer close failed: %s", e)
     await close_db()
     logger.info("Database connections closed")
 
