@@ -26,7 +26,10 @@ from backend.services.export_service import (
     ExportResult,
 )
 
-router = APIRouter(prefix="/api/v1/export", tags=["export"])
+# Phase 8 fix: no prefix here -- main.py mounts this router under
+# "/api/v1/export"; repeating it on the APIRouter produced doubled paths
+# like /api/v1/export/api/v1/export/request.
+router = APIRouter(tags=["export"])
 
 
 class ExportRequest(BaseModel):

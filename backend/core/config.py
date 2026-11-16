@@ -199,6 +199,18 @@ class Settings(BaseSettings):
         validation_alias=AliasChoices("git_author_email", "GIT_AUTHOR_EMAIL"),
     )
 
+    # Billing (Phase 8)
+    # Master switch for credit checks/deduction. Disabled by default: the
+    # product is in open beta, there is no auth yet (generation.py uses the
+    # placeholder user "default_user", which is not an int and previously
+    # crashed billing DB lookups with int(user_id)) and no payment flow wired.
+    # When False, BillingService skips every check and deduction so generation
+    # is never blocked by credits; set BILLING_ENABLED=true to re-enable.
+    billing_enabled: bool = Field(
+        default=False,
+        validation_alias=AliasChoices("billing_enabled", "BILLING_ENABLED"),
+    )
+
     # Credits and Pricing
     credits_per_simple_game: int = 10
     credits_per_complex_game: int = 25

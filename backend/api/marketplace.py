@@ -20,7 +20,10 @@ from backend.services.marketplace_service import (
     ModuleMetadata,
 )
 
-router = APIRouter(prefix="/api/v1/marketplace", tags=["marketplace"])
+# Phase 8 fix: no prefix here -- main.py mounts this router under
+# "/api/v1/marketplace"; repeating it on the APIRouter produced doubled
+# paths like /api/v1/marketplace/api/v1/marketplace/search.
+router = APIRouter(tags=["marketplace"])
 
 
 class SubmitModuleRequest(BaseModel):

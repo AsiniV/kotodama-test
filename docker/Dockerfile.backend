@@ -6,9 +6,23 @@ WORKDIR /app
 RUN apt-get update && apt-get install -y \
     git \
     curl \
+    unzip \
     gcc \
     libpq-dev \
     && rm -rf /var/lib/apt/lists/*
+
+# Phase 8: Godot headless baked into the backend image so the API can invoke
+# Godot directly (playtest / export) without shelling over to the worker
+# container. Matches GODOT_HEADLESS_PATH default (/usr/local/bin/godot) and
+# the barichello/godot-ci:4.3 worker version. Override GODOT_VERSION at build
+# time to upgrade both images together.
+ARG GODOT_VERSION=4.3
+RUN curl -fsSL "https://github.com/godotengine/godot/releases/download/${GODOT_VERSION}-stable/Godot_v${GODOT_VERSION}-stable_linux.x86_64.zip" -o /tmp/godot.zip \
+    && unzip -q /tmp/godot.zip -d /tmp/godot \
+    && mv "/tmp/godot/Godot_v${GODOT_VERSION}-stable_linux.x86_64" /usr/local/bin/godot \
+    && chmod +x /usr/local/bin/godot \
+    && rm -rf /tmp/godot /tmp/godot.zip \
+    && godot --version
 
 # Copy requirements first for better caching
 # Примечание: pyproject.toml в репозитории битый — ставим зависимости из requirements.txt
@@ -32,9 +46,11 @@ ENV PYTHONUNBUFFERED=1
 # Expose port
 EXPOSE 8000
 
-# Health check
-HEALTHCHECK --interval=30s --timeout=10s --start-period=5s --retries=3 \
-    CMD curl -f http://localhost:8000/health || exit 1
+# Health check (Phase 8: /api/v1/health — same endpoint as docker-compose,
+# which always answers 200 while the API is alive and reports per-component
+# status instead of only a bare liveness flag)
+HEALTHCHECK --interval=30s --timeout=10s --start-period=40s --retries=3 \
+    CMD curl -f http://localhost:8000/api/v1/health || exit 1
 
 # Run the application
 CMD ["python", "-m", "uvicorn", "backend.main:app", "--host", "0.0.0.0", "--port", "8000"]
