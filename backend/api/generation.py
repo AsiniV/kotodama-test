@@ -24,6 +24,7 @@ from backend.services.workspace_manager import get_workspace_manager
 from backend.services.billing_service import get_billing_service
 from backend.services.progress_service import get_progress_service
 from backend.core import paths
+from backend.core.config import get_settings
 from backend.schemas.api_schemas import (
     GenerationResponse, ProjectStatusResponse,
 )
@@ -63,11 +64,18 @@ async def start_generation(
         # Stamp the generated project id onto the canonical model
         wizard_input = request.model_copy(update={"project_name": project_id})
 
-        # Calculate credit cost BEFORE starting generation
+        # Calculate credit cost BEFORE starting generation. Phase 8: with
+        # billing disabled (the default) the estimate is 0 and no credits can
+        # block generation; the service itself also skips check/deduction.
+        settings = get_settings()
         billing_service = get_billing_service()
-        estimated_credits = billing_service.calculate_generation_cost(wizard_input)
+        estimated_credits = (
+            billing_service.calculate_generation_cost(wizard_input)
+            if settings.billing_enabled
+            else 0
+        )
 
-        # Check if user has sufficient credits
+        # Check if user has sufficient credits (always True when billing off)
         has_credits = await billing_service.check_credits_sufficient(user_id, estimated_credits)
         if not has_credits:
             raise HTTPException(
@@ -95,8 +103,11 @@ async def start_generation(
                 attempt_number = result.get("attempt_number", 1)
                 success = result.get("success", False)
 
-                # Charge credits on success OR second attempt failure
-                should_charge = success or (attempt_number >= 2)
+                # Handle credit charging based on Two-Attempt Rule.
+                # Phase 8: skipped entirely when billing is disabled (the
+                # default) — deduct_credits() is also a no-op in that case,
+                # this just avoids the pointless call.
+                should_charge = settings.billing_enabled and (success or (attempt_number >= 2))
 
                 if should_charge:
                     await billing_service.deduct_credits(

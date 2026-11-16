@@ -24,6 +24,21 @@ from backend.schemas.agent_schemas import WizardInput
 logger = logging.getLogger("kotodama.services.billing")
 
 
+def parse_user_id(user_id) -> Optional[int]:
+    """Coerce a caller-supplied user id to an int, or ``None``.
+
+    Phase 8 fix: the API layer currently passes the placeholder string
+    ``"default_user"`` (pre-auth), which used to crash every billing DB
+    lookup with ``ValueError: invalid literal for int()``. Non-numeric ids
+    are now handled gracefully: callers treat ``None`` as "no subscription
+    on record".
+    """
+    try:
+        return int(str(user_id))
+    except (TypeError, ValueError):
+        return None
+
+
 class BillingService:
     """
     Manages credits, subscriptions, and billing operations.
@@ -40,11 +55,19 @@ class BillingService:
         self.settings = get_settings()
     
     async def get_user_subscription(self, user_id: str) -> Optional[Subscription]:
-        """Get active subscription for a user."""
+        """Get active subscription for a user.
+
+        Non-numeric ids (e.g. the pre-auth placeholder ``"default_user"``)
+        have no DB row and return ``None`` instead of crashing on int().
+        """
+        uid = parse_user_id(user_id)
+        if uid is None:
+            logger.debug("No numeric user id for %r; treating as no subscription", user_id)
+            return None
         async with get_db_session() as session:
             result = await session.execute(
                 select(Subscription)
-                .where(Subscription.user_id == int(user_id))
+                .where(Subscription.user_id == uid)
                 .where(Subscription.is_active == True)
             )
             return result.scalar_one_or_none()
@@ -58,7 +81,15 @@ class BillingService:
         return subscription.credits_remaining
     
     async def check_credits_sufficient(self, user_id: str, required_credits: int) -> bool:
-        """Check if user has sufficient credits."""
+        """Check if user has sufficient credits.
+
+        Phase 8: when ``settings.billing_enabled`` is False (the default),
+        checks are skipped entirely and generation is never blocked by
+        credits — no DB access happens on this path.
+        """
+        if not self.settings.billing_enabled:
+            return True
+
         remaining = await self.get_user_credits(user_id)
         
         # Free tier users can still generate simple games (platform subsidy)
@@ -170,13 +201,33 @@ class BillingService:
             generation_id: Optional generation history ID to update
             
         Returns:
-            True if deduction successful, False otherwise
+            True if deduction successful, False otherwise. When billing is
+            disabled (``settings.billing_enabled=False``, the Phase 8 default)
+            this is a no-op returning True without touching the DB. Non-numeric
+            placeholder ids (pre-auth ``"default_user"``) are handled gracefully
+            instead of crashing on the numeric conversion.
         """
+        if not self.settings.billing_enabled:
+            logger.debug(
+                "Billing disabled: skipping deduction of %s credits for user %s (project %s)",
+                amount, user_id, project_id,
+            )
+            return True
+
+        uid = parse_user_id(user_id)
+        if uid is None:
+            logger.info(
+                "Billing: non-numeric user id %r has no subscription record; "
+                "skipping deduction (project %s)",
+                user_id, project_id,
+            )
+            return False
+
         async with get_db_session() as session:
             # Get subscription
             result = await session.execute(
                 select(Subscription)
-                .where(Subscription.user_id == int(user_id))
+                .where(Subscription.user_id == uid)
                 .where(Subscription.is_active == True)
             )
             subscription = result.scalar_one_or_none()
@@ -185,7 +236,7 @@ class BillingService:
                 logger.warning(f"No active subscription for user {user_id}")
                 # Create free tier subscription if none exists
                 subscription = Subscription(
-                    user_id=int(user_id),
+                    user_id=uid,
                     plan_type="free",
                     credits_remaining=0,
                     credits_total=0,
@@ -238,10 +289,22 @@ class BillingService:
         project_id: Optional[str] = None
     ) -> bool:
         """Refund credits to user (e.g., for service errors)."""
+        if not self.settings.billing_enabled:
+            logger.debug(
+                "Billing disabled: skipping refund of %s credits for user %s",
+                amount, user_id,
+            )
+            return True
+
+        uid = parse_user_id(user_id)
+        if uid is None:
+            logger.error(f"Cannot refund: non-numeric user id {user_id!r}")
+            return False
+
         async with get_db_session() as session:
             result = await session.execute(
                 select(Subscription)
-                .where(Subscription.user_id == int(user_id))
+                .where(Subscription.user_id == uid)
                 .where(Subscription.is_active == True)
             )
             subscription = result.scalar_one_or_none()
@@ -390,10 +453,15 @@ class BillingService:
         stripe_subscription_id: Optional[str] = None,
     ) -> bool:
         """Upgrade user's subscription plan."""
+        uid = parse_user_id(user_id)
+        if uid is None:
+            logger.error(f"Cannot upgrade: non-numeric user id {user_id!r}")
+            return False
+
         async with get_db_session() as session:
             result = await session.execute(
                 select(Subscription)
-                .where(Subscription.user_id == int(user_id))
+                .where(Subscription.user_id == uid)
                 .where(Subscription.is_active == True)
             )
             subscription = result.scalar_one_or_none()
@@ -402,7 +470,7 @@ class BillingService:
                 # Create new subscription
                 plan_features = self.get_plan_features(new_plan)
                 subscription = Subscription(
-                    user_id=int(user_id),
+                    user_id=uid,
                     plan_type=new_plan,
                     credits_remaining=plan_features["credits_monthly"],
                     credits_total=plan_features["credits_monthly"],
