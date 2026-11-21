@@ -3,11 +3,18 @@
 Two-stage approach:
 
 1. **Collapse.** A classic min-entropy WFC over a closed tile vocabulary —
-   ``W`` solid wall, ``F`` open floor, ``C`` corridor floor, ``S`` start-room
-   tile, ``E`` end-room tile — with *directional* adjacency rules. The rules
-   are transposed (if ``X`` may sit east of ``Y``, then ``Y`` may sit west of
-   ``X``), which makes the seeded template satisfiable by construction:
+   ``B`` border wall, ``W`` solid wall, ``F`` open floor, ``C`` corridor
+   floor, ``S`` start-room tile, ``E`` end-room tile — with *directional*
+   adjacency rules. The rules are transposed (if ``X`` may sit east of
+   ``Y``, then ``Y`` may sit west of ``X``), which makes the seeded template
+   satisfiable by construction:
 
+   * every grid-border cell is pre-assigned to the dedicated ``B`` tile,
+     whose only neighbours are itself and plain walls (Phase 10 fix: without
+     a border domain of its own, AC-3 propagation pushed floors/corridors
+     onto the edge rows/columns, where the asymmetric wall/floor rules made
+     the remaining domains contradictory — WFC then failed to converge for
+     essentially every seed);
    * walls may not sit south/east of a floor tile, so floor blobs stay
      compact and never bleed into the map border;
    * ``S`` exits eastwards into the network; ``E`` is entered from the
@@ -45,10 +52,11 @@ from .base import (
 # Tile model
 # ---------------------------------------------------------------------------
 
-W, F, C, S, E = "W", "F", "C", "S", "E"
-ALL_TILES: Tuple[str, str, str, str, str] = (W, F, C, S, E)
+B, W, F, C, S, E = "B", "W", "F", "C", "S", "E"
+ALL_TILES: Tuple[str, str, str, str, str, str] = (B, W, F, C, S, E)
 
 #: Weighted tile frequencies used when collapsing a still-ambiguous cell.
+#: ``B`` never participates in weighted picks — it is stamped, not chosen.
 TILE_WEIGHTS: Dict[str, int] = {W: 62, F: 24, C: 12, S: 1, E: 1}
 
 _NORTH, _SOUTH, _WEST, _EAST = 0, 1, 2, 3
@@ -56,22 +64,82 @@ _DIRS: Tuple[Tuple[int, int], ...] = ((0, -1), (0, 1), (-1, 0), (1, 0))
 
 _ANY: Set[str] = {W, F, C, S, E}
 _FLOORS: Set[str] = {F, C}
+_BORDER: Set[str] = {B}
+
+
+def _build_adjacency(
+    pairs: Dict[str, Tuple[Set[str], Set[str], Set[str], Set[str]]]
+) -> Dict[str, Tuple[Set[str], Set[str], Set[str], Set[str]]]:
+    """Close a one-sided rule table under union (symmetric "may touch").
+
+    ``pairs`` declares, per tile and direction (north, south, west, east),
+    the neighbours that tile *originates* — i.e. the permitted adjacencies
+    read outwards from it. The final table is the union closure:
+    ``table[X][d]`` contains every tile Y such that X permits Y at ``d`` or
+    Y permits X at the opposite direction. This keeps the pair relation
+    symmetric (``Y in table[X][d]`` iff ``X in table[Y][opposite(d)]``) —
+    the invariant AC-3 propagation relies on to stay confluent — while
+    letting each tile express its own growth bias (walls may not be
+    south/east of floors; floors never expand north/west into walls).
+    """
+    tiles = list(pairs)
+    forward: Dict[str, List[Set[str]]] = {t: [set(s) for s in dirs] for t, dirs in pairs.items()}
+    opposite = (1, 0, 3, 2)  # north<->south, west<->east
+    table: Dict[str, List[Set[str]]] = {t: [set() for _ in range(4)] for t in tiles}
+    for x, dirs in forward.items():
+        for d, allowed in enumerate(dirs):
+            for y in allowed:
+                table[x][d].add(y)
+                table[y][opposite[d]].add(x)
+    return {t: (s[0], s[1], s[2], s[3]) for t, s in table.items()}
+
 
 #: ``ADJACENCY[X][d]`` = tiles allowed in the neighbour of an ``X`` at ``d``
-#: (order: north, south, west, east). Transposed pairs are consistent.
-ADJACENCY: Dict[str, Tuple[Set[str], Set[str], Set[str], Set[str]]] = {
-    # Solid wall: only walls to the south/east (keeps floor blobs compact);
-    # north/west may be anything so corridors can pass beside walls.
-    W: (_ANY, {W}, _ANY, {W}),
-    # Open floor: walls allowed north/west only, floors/corridors elsewhere.
-    F: ({W, S} | _FLOORS, _FLOORS | {E}, {W, E} | _FLOORS, _FLOORS | {S}),
+#: (order: north, south, west, east). Declared as *directed* permissions
+#: and closed under symmetry by :func:`_build_adjacency` — the pair
+#: relation is symmetric by construction, which is what keeps AC-3
+#: propagation confluent.
+#:
+#: Phase 10 border fix, take two: the previous table also forbade walls
+#: *north/west* of floors ("floors never expand north/west into walls"),
+#: which silently removed ``W`` from the north/west rows above. That made
+#: the frame itself unsatisfiable: a corner ``B`` needs a wall neighbour
+#: that is simultaneously floor-free to its south *and* east — impossible,
+#: because every such wall still permits ``W`` in one direction, so AC-3
+#: emptied a frame domain before a single cell was even collapsed (WFC
+#: then failed for *every* seed). The rule table now only expresses the
+#: compactness bias where it is safe (south/east of walls stay walls;
+#: floors stay away from the S/E terminals except along declared edges),
+#: while ``B``'s own rows permit any interior tile, keeping the border
+#: frame trivially satisfiable. Walkability never touches the frame
+#: because ``B`` is pre-assigned and absent from interior domains.
+ADJACENCY: Dict[str, Tuple[Set[str], Set[str], Set[str], Set[str]]] = _build_adjacency({
+    # Border wall: seals the map edge. Its rows list only itself; the
+    # symmetry closure lets every interior tile that "may touch B" appear
+    # next to the frame, so the stamped border never contradicts whatever
+    # collapses just inside it.
+    B: (_BORDER, _BORDER, _BORDER, _BORDER),
+    # Solid wall: may face anything (the frame and open terrain included);
+    # only walls continue south/east of a wall, which keeps floor blobs
+    # compact and gives collapse a strong all-wall attractor.
+    W: (_ANY | _BORDER, {W}, _ANY | _BORDER, {W}),
+    # Open floor: stays compact — only other floors continue it south/east;
+    # the S/E terminals connect along the corridor network instead.
+    F: (_FLOORS | {S, E}, _FLOORS, _FLOORS | {E}, _FLOORS | {S}),
     # Corridor: like floor but cannot terminate in S/E.
-    C: ({W} | _FLOORS, _FLOORS, {W} | _FLOORS, _FLOORS),
+    C: (_FLOORS, _FLOORS, _FLOORS, _FLOORS),
     # Start-room tile: exits eastwards into the corridor network.
     S: ({W} | _FLOORS, {W}, {W}, _FLOORS),
     # End-room tile: entered from the north/west side of the network.
     E: ({W} | _FLOORS, {W}, {W} | _FLOORS, {W}),
-}
+})
+
+#: Tiles that may sit on grid-border cells (only the dedicated border tile).
+BORDER_TILE = B
+
+
+def _is_border(x: int, y: int, width: int, height: int) -> bool:
+    return x in (0, width - 1) or y in (0, height - 1)
 
 
 class _Contradiction(Exception):
@@ -140,14 +208,14 @@ def _seed_template(domains: List[List[Set[str]]], width: int, height: int,
         domains[y][x] = {tile}
 
     fy = rng.randrange(2, max(3, height - 2))
-    fx = rng.randrange(1, max(2, width - 5))
-    for i in range(min(4, width - 1 - fx)):
+    fx = rng.randrange(2, max(3, width - 6))
+    for i in range(min(4, width - 3 - fx)):
         assign(fx + i, fy, F)
 
-    sx = rng.randrange(1, max(2, width // 3))
-    sy = rng.randrange(1, max(2, height // 2))
-    ex = rng.randrange(max(sx + 2, 2 * width // 3), width - 2)
-    ey = rng.randrange(max(sy + 1, 2), height - 2)
+    sx = rng.randrange(2, max(3, width // 3))
+    sy = rng.randrange(2, max(3, height // 2))
+    ex = rng.randrange(max(sx + 2, 2 * width // 3), width - 3)
+    ey = rng.randrange(max(sy + 1, 2), height - 3)
 
     # Staircase skeleton: east-run on the start row, column down at `ex`.
     assign(sx, sy, S)
@@ -172,14 +240,31 @@ def _seed_template(domains: List[List[Set[str]]], width: int, height: int,
             assign(nx_, ny_, F)
 
 
+def _init_domains(width: int, height: int) -> List[List[Set[str]]]:
+    """Fresh domains with the border-frame bug fixed (Phase 10).
+
+    Every grid-border cell is pre-assigned to the dedicated ``B`` tile and
+    interior cells exclude ``B`` from their domains. Without this split the
+    asymmetric wall/floor adjacency rules let propagation push floor tiles
+    onto the edge rows/columns, where the remaining neighbours became
+    contradictory — collapse then failed for essentially every seed.
+    """
+    interior = set(ALL_TILES) - {B}
+    return [
+        [
+            {B} if _is_border(x, y, width, height) else set(interior)
+            for x in range(width)
+        ]
+        for y in range(height)
+    ]
+
+
 def _collapse(width: int, height: int, rng: random.Random,
               max_attempts: int = 12) -> List[List[str]]:
     """Run weighted min-entropy WFC; retry the whole grid on contradiction."""
     last_error: Optional[Exception] = None
     for _attempt in range(max_attempts):
-        domains: List[List[Set[str]]] = [
-            [set(ALL_TILES) for _ in range(width)] for _ in range(height)
-        ]
+        domains: List[List[Set[str]]] = _init_domains(width, height)
         try:
             _seed_template(domains, width, height, rng)
             _propagate(domains, width, height,
