@@ -83,6 +83,10 @@ Output MUST be valid JSON matching QuestGraph schema."""
             return QuestGraphList(quests=[])
 
         prompt = self._build_prompt(gdd, input_data.architecture_plan, input_data.lore_context)
+
+        # Phase 11: IR-repair feedback from the ir_assembler node (if any).
+        if getattr(input_data, "extra_context", None):
+            prompt += f"\nVALIDATION FEEDBACK (fix these in your output):\n{input_data.extra_context}\n"
         result = await self._call_llm(prompt, QuestGraphList)
 
         # Validate generated quests

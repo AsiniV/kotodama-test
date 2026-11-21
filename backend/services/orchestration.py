@@ -1,12 +1,13 @@
 """
 Complete LangGraph orchestration for all 11 agents.
 
-Pipeline (Phase 6 — persistence + checkpoint):
+Pipeline (Phase 6 — persistence + checkpoint; Phase 11 — IR assembler):
 
 START → designer → architect → quest_designer → dialogue_writer → level_generator
-      → art_director → coder → persist_files → qa → playtest → localization → commit → END
-                    ↑                                                       │
-                    └──────────── retry (attempt < MAX_ATTEMPTS)───────────┘
+      → art_director → coder → persist_files → ir_assembler → qa → playtest → localization → commit → END
+                    ↑            │        ↑                                   │
+                    │            └────────┴── IR-retry (attempt < MAX_IR_RETRIES)
+                    └──────────── retry (attempt < MAX_ATTEMPTS)──────────────┘
       any node failure → fail → END       critical failure after retries → rollback → END
 
 Wiring rules enforced here:
@@ -26,6 +27,12 @@ Wiring rules enforced here:
   (langgraph-checkpoint-postgres) when the DB is reachable, MemorySaver
   fallback otherwise — so generation state survives backend restarts and can
   be resumed per thread via :meth:`OrchestratorService.resume_generation`.
+- IR assembly (Phase 11): the ``ir_assembler`` node turns every agent output
+  into a validated GameIR v2 (:func:`backend.services.ir_assembler.assemble_game_ir`).
+  On validation failure it routes back to the *responsible* agent (per
+  :func:`backend.services.ir_assembler.attribute_ir_errors`) with actionable
+  error feedback injected into its input, bounded by ``MAX_IR_RETRIES``;
+  exhausted retries fail/rollback.
 """
 
 import json
@@ -49,6 +56,11 @@ from backend.agents.playtester import AIPlaytesterAgent
 from backend.agents.qa import QAAgent
 from backend.agents.quest_designer import QuestDesignerAgent
 from backend.core import paths
+from backend.services.ir_assembler import (
+    MAX_IR_RETRIES,
+    AssemblyResult,
+    assemble_game_ir,
+)
 from backend.services.progress_service import (
     STATUS_COMPLETED,
     STATUS_FAILED,
@@ -128,6 +140,12 @@ class GenerationState(TypedDict):
     asset_paths: list[str]
     level_layout: LevelLayout | dict | None
     game_ir: GameIR | dict | None
+    #: Phase 11: structured outcome of the last ir_assembler validation run.
+    game_ir_validation: dict[str, Any] | None
+    #: Phase 11: IR-repair retries consumed so far (bounded by MAX_IR_RETRIES).
+    ir_repair_attempts: int
+    #: Phase 11: agent node the last validation failure was attributed to.
+    ir_repair_target: str | None
     generated_files: list[GeneratedFile]
     persisted_files: list[str]
     persist_errors: list[str]
@@ -201,6 +219,57 @@ def _level_parameters(plan: Any) -> dict | None:
     return None
 
 
+#: Phase 11: agent nodes the ir_assembler retry router can route back to.
+IR_REPAIR_ROUTES: tuple[str, ...] = (
+    "designer",
+    "architect",
+    "quest_designer",
+    "dialogue_writer",
+    "level_generator",
+    "art_director",
+    "coder",
+    "localization",
+)
+
+#: Phase 11: agents whose single pydantic input model carries an ``extra_context``
+#: field — validation feedback is injected there so the LLM sees it on retry.
+_FEEDBACK_CONTEXT_AGENTS: frozenset[str] = frozenset(
+    {"designer", "quest_designer", "dialogue_writer", "coder"}
+)
+
+
+def _ir_repair_context(state: GenerationState) -> str:
+    """Feedback text for the agent currently being repaired (empty when none).
+
+    The ir_assembler node stores per-agent actionable error text under
+    ``game_ir_validation['agent_feedback']``; each production node calls this
+    helper right before building its agent input so a retry attempt receives
+    the exact GameIR problems it has to fix.
+    """
+    target = state.get("ir_repair_target")
+    if not target:
+        return ""
+    validation = state.get("game_ir_validation") or {}
+    feedback = validation.get("agent_feedback") or {}
+    return str(feedback.get(target) or "")
+
+
+def _with_extra_context(model: Any, context: str) -> Any:
+    """Return a copy of an agent-input model with ``extra_context`` filled in.
+
+    ``extra_context`` is an optional prompt addendum on the four LLM authoring
+    inputs (Phase 11); models without the field are returned unchanged.
+    """
+    if not context or model is None:
+        return model
+    if "extra_context" not in type(model).model_fields:
+        return model
+    try:
+        return model.model_copy(update={"extra_context": context})
+    except Exception:  # pragma: no cover - defensive
+        return model
+
+
 # ----------------------------------------------------------------------
 # Phase 7: progress-event plumbing
 # ----------------------------------------------------------------------
@@ -214,6 +283,7 @@ PIPELINE_STAGES: tuple[str, ...] = (
     "level_generator",
     "art_director",
     "coder",
+    "ir_assembler",
     "qa",
     "playtest",
     "localization",
@@ -224,6 +294,7 @@ PIPELINE_STAGES: tuple[str, ...] = (
 NODE_TO_STAGE: dict[str, str] = {
     **{node: node for node in PIPELINE_STAGES},
     "persist_files": "coder",
+    "ir_assembler": "coder",
     "rollback": "failed",
     "fail": "failed",
 }
@@ -243,6 +314,34 @@ STAGE_COMPLETION_PCT: dict[str, int] = {
     "localization": 95,
     "commit": 100,
 }
+
+
+def _attribute_grouped(result: AssemblyResult) -> dict[str, list]:
+    """Group an AssemblyResult's errors by responsible agent node."""
+    from backend.services.ir_assembler import attribute_ir_errors
+
+    return attribute_ir_errors(result.report)
+
+
+def _raw_state_snapshot(state: GenerationState) -> dict:
+    """Best-effort JSON-safe dump of the agent-output sections of the state."""
+    snapshot: dict[str, Any] = {}
+    for key in ("gdd", "quest_graphs", "dialogue_trees", "level_layout", "generated_assets"):
+        value = state.get(key)
+        try:
+            if hasattr(value, "model_dump"):
+                snapshot[key] = value.model_dump(mode="json")
+            elif isinstance(value, list):
+                snapshot[key] = [
+                    item.model_dump(mode="json") if hasattr(item, "model_dump") else item
+                    for item in value
+                ]
+            else:
+                snapshot[key] = value
+            json.dumps(snapshot[key])
+        except (TypeError, ValueError):
+            snapshot[key] = repr(value)
+    return snapshot
 
 
 def _wizard_field(state: GenerationState | dict, name: str, default: Any = None) -> Any:
@@ -457,6 +556,7 @@ class OrchestratorService:
         "art_director",
         "coder",
         "persist_files",
+        "ir_assembler",
         "qa",
         "playtest",
         "localization",
@@ -486,7 +586,6 @@ class OrchestratorService:
             ("level_generator", "art_director"),
             ("art_director", "coder"),
             ("coder", "persist_files"),
-            ("persist_files", "qa"),
             ("qa", "playtest"),
         ):
             builder.add_conditional_edges(
@@ -494,6 +593,19 @@ class OrchestratorService:
                 self._failure_router,
                 {"continue": nxt, "fail": "fail", "rollback": "rollback"},
             )
+
+        # Phase 11: the IR assembler validates the assembled GameIR; a failure
+        # routes back to the *responsible* agent (bounded by MAX_IR_RETRIES),
+        # otherwise the run fails/rolls back before QA ever sees broken data.
+        builder.add_conditional_edges(
+            "persist_files",
+            self._failure_router,
+            {"continue": "ir_assembler", "fail": "fail", "rollback": "rollback"},
+        )
+        ir_route_targets: dict[str, str] = {"continue": "qa", "fail": "fail", "rollback": "rollback"}
+        for route in IR_REPAIR_ROUTES:
+            ir_route_targets[f"repair:{route}"] = route
+        builder.add_conditional_edges("ir_assembler", self._after_ir_router, ir_route_targets)
 
         # Playtest decides retry vs. proceed. Localization runs AFTER it and
         # is non-blocking (its result never changes routing).
@@ -569,6 +681,43 @@ class OrchestratorService:
             return "fail"
         return "continue"
 
+    @staticmethod
+    def _repair_consumed_update(state: GenerationState) -> dict:
+        """Clear the pending IR-repair target once the repaired agent re-ran.
+
+        Returned as an update dict (never mutating state in place): the routed
+        agent consumed its feedback, so downstream nodes must not inject it a
+        second time.  ``game_ir_validation`` and ``ir_repair_attempts`` stay
+        intact — the counter only grows on actual repair routing.
+        """
+        if not state.get("ir_repair_target"):
+            return {}
+        return {"ir_repair_target": None}
+
+    def _after_ir_router(
+        self, state: GenerationState
+    ) -> Literal["continue", "fail", "rollback"] | str:
+        """Route a validated GameIR to QA, or back to the responsible agent.
+
+        On validation failure the ir_assembler records ``ir_repair_target``
+        (the agent owning the offending IR section) and per-agent feedback;
+        while retries remain the run loops back through that agent's pipeline
+        segment so its fresh output is re-assembled.  Once MAX_IR_RETRIES are
+        exhausted the run fails (nothing generated yet) or rolls back.
+        """
+        if state.get("error_message"):
+            return "rollback" if state.get("generated_files") else "fail"
+
+        validation = state.get("game_ir_validation") or {}
+        if validation.get("ok"):
+            return "continue"
+
+        target = state.get("ir_repair_target")
+        attempts = int(state.get("ir_repair_attempts") or 0)
+        if target in IR_REPAIR_ROUTES and attempts < MAX_IR_RETRIES:
+            return f"repair:{target}"
+        return "rollback" if state.get("generated_files") else "fail"
+
     def _after_playtest_router(self, state: GenerationState) -> Literal["retry", "continue", "rollback"]:
         """Route based on playtest results (QA failures retry together with playtest)."""
         if state.get("error_message"):
@@ -620,6 +769,9 @@ class OrchestratorService:
             "asset_paths": [],
             "level_layout": None,
             "game_ir": None,
+            "game_ir_validation": None,
+            "ir_repair_attempts": 0,
+            "ir_repair_target": None,
             "generated_files": [],
             "persisted_files": [],
             "persist_errors": [],
@@ -795,8 +947,15 @@ class OrchestratorService:
         """Run Game Designer agent."""
         try:
             wizard = _wizard_input_from_dict(state["wizard_input"])
-            gdd = await self.designer.execute(DesignerInput(wizard_input=wizard))
-            return {"gdd": gdd, "messages": [f"✓ GDD created: {gdd.title}"]}
+            designer_input = _with_extra_context(
+                DesignerInput(wizard_input=wizard), _ir_repair_context(state)
+            )
+            gdd = await self.designer.execute(designer_input)
+            return {
+                "gdd": gdd,
+                "messages": [f"✓ GDD created: {gdd.title}"],
+                **self._repair_consumed_update(state),
+            }
         except Exception as e:
             logger.exception("Designer failed")
             return {"error_message": f"Designer failed: {e}"}
@@ -819,12 +978,21 @@ class OrchestratorService:
             if state["gdd"].quest_complexity == "none":
                 return {"quest_graphs": [], "messages": ["⏳ Quest Designer: Skipped (complexity=none)"]}
 
-            quests_output = await self.quest_designer.execute(QuestDesignerInput(
-                design_document=state["gdd"],
-                architecture_plan=state["architecture_plan"],
-            ))
+            quests_output = await self.quest_designer.execute(
+                _with_extra_context(
+                    QuestDesignerInput(
+                        design_document=state["gdd"],
+                        architecture_plan=state["architecture_plan"],
+                    ),
+                    _ir_repair_context(state),
+                )
+            )
             quest_graphs = list(quests_output.quests)
-            return {"quest_graphs": quest_graphs, "messages": [f"✓ Generated {len(quest_graphs)} quests"]}
+            return {
+                "quest_graphs": quest_graphs,
+                "messages": [f"✓ Generated {len(quest_graphs)} quests"],
+                **self._repair_consumed_update(state),
+            }
         except Exception as e:
             logger.exception("Quest Designer failed")
             return {"error_message": f"Quest Designer failed: {e}"}
@@ -835,12 +1003,21 @@ class OrchestratorService:
             if state["gdd"].dialogue_depth == "none":
                 return {"dialogue_trees": [], "messages": ["⏳ Dialogue Writer: Skipped (depth=none)"]}
 
-            dialogues_output = await self.dialogue_writer.execute(DialogueWriterInput(
-                design_document=state["gdd"],
-                quest_graphs=list(state.get("quest_graphs") or []),
-            ))
+            dialogues_output = await self.dialogue_writer.execute(
+                _with_extra_context(
+                    DialogueWriterInput(
+                        design_document=state["gdd"],
+                        quest_graphs=list(state.get("quest_graphs") or []),
+                    ),
+                    _ir_repair_context(state),
+                )
+            )
             dialogue_trees = list(dialogues_output.dialogues)
-            return {"dialogue_trees": dialogue_trees, "messages": [f"✓ Generated {len(dialogue_trees)} dialogue trees"]}
+            return {
+                "dialogue_trees": dialogue_trees,
+                "messages": [f"✓ Generated {len(dialogue_trees)} dialogue trees"],
+                **self._repair_consumed_update(state),
+            }
         except Exception as e:
             logger.exception("Dialogue Writer failed")
             return {"error_message": f"Dialogue Writer failed: {e}"}
@@ -855,7 +1032,11 @@ class OrchestratorService:
             layout = await self.level_generator.execute(LevelGeneratorInput(
                 architecture_plan=state["architecture_plan"],
             ))
-            return {"level_layout": layout, "messages": [f"✓ Level layout: {layout.algorithm} {layout.width}x{layout.height}"]}
+            return {
+                "level_layout": layout,
+                "messages": [f"✓ Level layout: {layout.algorithm} {layout.width}x{layout.height}"],
+                **self._repair_consumed_update(state),
+            }
         except Exception as e:
             logger.exception("Level Generator failed")
             return {"error_message": f"Level Generator failed: {e}"}
@@ -883,6 +1064,7 @@ class OrchestratorService:
                 "generated_assets": assets,
                 "asset_paths": asset_paths,
                 "messages": [f"✓ Art: {len(prompts)} prompts, {len(assets)} assets"],
+                **self._repair_consumed_update(state),
             }
         except Exception as e:
             logger.warning("Art pipeline failed; continuing without assets: %s", e)
@@ -905,58 +1087,125 @@ class OrchestratorService:
             if attempt > 1 and workspace_path:
                 preserved = await self.workspace_manager.preserve_assets(Path(workspace_path))
 
-            coder_output = await self.coder.execute(CoderInput(
-                architecture_plan=state["architecture_plan"],
-                quest_graphs=list(state.get("quest_graphs") or []),
-                dialogue_trees=list(state.get("dialogue_trees") or []),
-                asset_paths=list(state.get("asset_paths") or []),
-                level_layout=(
-                    state["level_layout"].model_dump()
-                    if isinstance(state.get("level_layout"), LevelLayout)
-                    else state.get("level_layout")
-                ),
-            ))
+            coder_output = await self.coder.execute(
+                _with_extra_context(
+                    CoderInput(
+                        architecture_plan=state["architecture_plan"],
+                        quest_graphs=list(state.get("quest_graphs") or []),
+                        dialogue_trees=list(state.get("dialogue_trees") or []),
+                        asset_paths=list(state.get("asset_paths") or []),
+                        level_layout=(
+                            state["level_layout"].model_dump()
+                            if isinstance(state.get("level_layout"), LevelLayout)
+                            else state.get("level_layout")
+                        ),
+                    ),
+                    _ir_repair_context(state),
+                )
+            )
             files = list(coder_output.files)
 
             if preserved and workspace_path:
                 await self.workspace_manager.restore_assets(Path(workspace_path), preserved)
                 await self.workspace_manager.clear_preserved(Path(workspace_path))
 
-            game_ir = self._build_game_ir(state, files)
             return {
                 "generated_files": files,
-                "game_ir": game_ir,
                 "attempt_number": attempt,
                 "messages": [f"✓ Generated {len(files)} files (Attempt {attempt})"],
+                **self._repair_consumed_update(state),
             }
         except Exception as e:
             logger.exception("Coder failed")
             return {"error_message": f"Coder failed: {e}"}
 
-    def _build_game_ir(self, state: GenerationState, files: list[GeneratedFile]) -> dict:
-        """Assemble the Game IR snapshot persisted alongside the generated code.
+    # ------------------------------------------------------------------
+    # Phase 11: IR assembly + validation (runs after persist_files)
+    # ------------------------------------------------------------------
+    async def _run_ir_assembler(self, state: GenerationState) -> dict:
+        """Assemble every agent output into a validated GameIR v2.
 
-        Returned as a plain dict so it stays JSON-serializable for future
-        checkpointers; built leniently so stub/partial upstream outputs never
-        crash the coder node.
+        Delegates mapping + semantic validation to
+        :func:`backend.services.ir_assembler.assemble_game_ir`; on failure the
+        first attributed agent node becomes ``ir_repair_target`` (with its
+        actionable feedback stored in ``game_ir_validation['agent_feedback']``)
+        and :meth:`_after_ir_router` loops the run back through that agent —
+        bounded by ``MAX_IR_RETRIES``, after which the run fails/rolls back.
+        The ``files`` key mirrors the pre-Phase-11 contract so downstream
+        consumers keep finding the generated-file list inside the IR payload.
         """
-        entities: list[dict] = []
-        used_slots = {asset.slot for asset in state.get("generated_assets", [])}
-        for slot in sorted(used_slots):
-            entities.append({"id": slot, "type": "npc" if slot == "npc" else "decoration", "sprite": slot})
-        for quest in state.get("quest_graphs", []):
-            for npc in getattr(quest, "npcs_involved", []) or []:
-                entities.append({"id": str(npc), "type": "npc"})
+        try:
+            result = assemble_game_ir(state)
+        except Exception as e:
+            logger.exception("IR assembler failed")
+            return {"error_message": f"IR assembly failed: {e}"}
 
-        ir = GameIR(
-            design_document=state.get("gdd") if isinstance(state.get("gdd"), GameDesignDocument) else None,
-            quests=list(state.get("quest_graphs") or []),
-            dialogues=list(state.get("dialogue_trees") or []),
-            level_layout=state.get("level_layout") if isinstance(state.get("level_layout"), LevelLayout) else None,
-            entities=entities,
+        payload = self._ir_payload(result, state)
+        attempts = int(state.get("ir_repair_attempts") or 0)
+        if result.ok:
+            warnings = len(result.report.warnings)
+            return {
+                "game_ir": payload,
+                "game_ir_validation": payload["validation"],
+                "ir_repair_target": None,
+                "messages": [
+                    f"✓ IR assembled: schema v{payload['schema_version']}, "
+                    f"{len(payload['entities'])} entities, {warnings} warnings"
+                ],
+            }
+
+        target = next(iter(payload["validation"]["attributed_to"]), None)
+        attempts += 1
+        exhausted = attempts >= MAX_IR_RETRIES or target is None
+        message = (
+            f"✗ IR validation FAILED ({len(payload['validation']['errors'])} errors) "
+            f"— repairs exhausted"
+            if exhausted
+            else f"⚠ IR validation failed ({len(payload['validation']['errors'])} errors) "
+            f"— routing repair to {target} (attempt {attempts}/{MAX_IR_RETRIES})"
         )
-        payload = ir.model_dump(mode="json")
-        payload["files"] = [f.path for f in files]
+        update: dict[str, Any] = {
+            "game_ir": payload,
+            "game_ir_validation": payload["validation"],
+            "ir_repair_attempts": attempts,
+            "ir_repair_target": None if exhausted else target,
+            "messages": [message],
+        }
+        if exhausted:
+            update["error_message"] = (
+                "GameIR validation failed after "
+                f"{max(attempts - 1, 0)} repair attempt(s):\n"
+                + "\n".join(f"  - {line}" for line in result.error_summary.splitlines()[1:6])
+            )
+        return update
+
+    @staticmethod
+    def _ir_payload(result: AssemblyResult, state: GenerationState) -> dict:
+        """JSON-safe GameIR dict + embedded validation summary (Phase 11).
+
+        Built from the validated model when possible; when the payload could
+        not even be loaded into GameIR (``schema.invalid``), the raw section
+        dump is stored under ``partial`` so failures stay debuggable without
+        risking a non-serializable object in the checkpointed state.
+        """
+        if result.ir is not None:
+            payload = result.ir.model_dump(mode="json")
+        else:
+            payload = {"schema_version": 2, "partial": _raw_state_snapshot(state)}
+        payload["files"] = [f.path for f in (state.get("generated_files") or [])]
+        report = result.report
+        payload["validation"] = {
+            "ok": report.ok,
+            "errors": [{"code": e.code, "path": e.path, "message": e.message} for e in report.errors],
+            "warnings": [{"code": w.code, "path": w.path, "message": w.message} for w in report.warnings],
+            "attributed_to": {
+                node: [{"code": e.code, "path": e.path, "message": e.message} for e in errs]
+                for node, errs in sorted(
+                    _attribute_grouped(result).items(), key=lambda kv: (-len(kv[1]), kv[0])
+                )
+            },
+            "agent_feedback": dict(result.agent_feedback),
+        }
         return payload
 
     # ------------------------------------------------------------------

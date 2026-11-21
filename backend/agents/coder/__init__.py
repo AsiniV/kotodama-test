@@ -124,6 +124,10 @@ SAVE SYSTEM REQUIRED: {arch.save_system_required}
         if coder_input.level_layout:
             prompt += f"\nLEVEL LAYOUT: {coder_input.level_layout}\n"
         
+        # Phase 11: IR-repair feedback from the ir_assembler node (if any).
+        if getattr(coder_input, "extra_context", None):
+            prompt += f"\nVALIDATION FEEDBACK (fix these in your output):\n{coder_input.extra_context}\n"
+        
         prompt += """
 Generate COMPLETE, WORKING GDScript code for all required modules.
 Each file must be fully implemented with no placeholders.

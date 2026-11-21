@@ -83,6 +83,10 @@ Output MUST be valid JSON matching DialogueTree schema."""
             return DialogueTreeList(dialogues=[])
 
         prompt = self._build_prompt(gdd, input_data.quest_graphs, input_data.lore_context)
+
+        # Phase 11: IR-repair feedback from the ir_assembler node (if any).
+        if getattr(input_data, "extra_context", None):
+            prompt += f"\nVALIDATION FEEDBACK (fix these in your output):\n{input_data.extra_context}\n"
         result = await self._call_llm(prompt, DialogueTreeList)
 
         # Validate generated dialogues
