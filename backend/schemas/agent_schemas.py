@@ -505,7 +505,16 @@ class Corridor(BaseModel):
 
 
 class LevelLayout(BaseModel):
-    """Procedurally generated level layout."""
+    """Procedurally generated level layout.
+
+    Phase 10: layouts are produced by the deterministic geometry engines in
+    ``backend/services/levelgen`` (seeded BSP / cellular automata / WFC /
+    random walk), never "imagined" by the LLM. The optional ``grid`` field
+    carries the real tile map as ``height`` row-major strings of exactly
+    ``width`` characters each (``'#'`` wall, ``'.'`` floor); every room,
+    corridor and spawn point refers to cells of that grid, and start->end
+    reachability is verified with BFS before a layout is returned.
+    """
     algorithm: str
     width: int
     height: int
@@ -517,6 +526,14 @@ class LevelLayout(BaseModel):
     start_room: str
     end_room: str
     validation_passed: bool = False
+    grid: Optional[list[str]] = Field(
+        default=None,
+        description=(
+            "Tile map rows ('#' wall, '.' floor), row-major; when present each "
+            "row has exactly `width` chars and there are exactly `height` rows "
+            "(Phase 10 deterministic levelgen)."
+        ),
+    )
 
 
 class LevelGeneratorInput(BaseModel):
