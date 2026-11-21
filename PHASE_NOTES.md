@@ -388,3 +388,71 @@ DELETE really removes the workspace and clears durable progress. Tests:
    predate this numbering scheme (they test export/marketplace, not the IR) and
    are not collected by pytest; renaming or folding them into `tests/` would
    avoid confusion about what "Phase 9" refers to.
+
+## Phase 10 — Deterministic levelgen + LevelGeneratorAgent wrapper (this phase)
+
+Scope delivered:
+- `backend/services/levelgen/wfc.py`: fixed the `_seed_template` vs
+  `ADJACENCY` contradiction — the old table let `W` grow only south/east of
+  another `W`, so the stamped `S -> C-run -> C-column -> E` staircase plus its
+  floor patches emptied a domain inside two propagation hops and WFC failed
+  for *every* seed. The rebuilt table keeps only jointly-satisfiable biases,
+  `_seed_template` stamps an all-wall moat around every non-border cell, and
+  `_collapse` deterministically re-collapses from a fresh seeded template on
+  any initial-propagation contradiction. Room packing moved to a subdivision
+  strategy (`_subdivide`) over maximal floor rectangles: rooms are
+  non-overlapping by construction and honour `max_rooms`. Verified across
+  60 seeds per algorithm: 0 failures, byte-identical reruns, BFS start->end
+  reachable.
+- `backend/agents/level_generator/__init__.py`: refactored into a thin LLM
+  *parameter-choosing* wrapper. The model returns a
+  `LevelGenerationProposal` (parameters only — never coordinates); any LLM
+  failure/garbage falls back to a deterministic proposal derived from the
+  plan; architect `level_parameters` always override the proposal; geometry
+  is delegated to `backend.services.levelgen.generate_layout(...)`.
+  `orchestration._run_level_generator` invokes it unchanged and cleanly
+  (node still skipped when the plan has no `level_parameters`).
+- `tests/test_levelgen.py`: 33 offline tests — schema validity, well-shaped
+  grid, spawns-on-floor, BFS reachability (single seed + 20-seed sweep) for
+  all four algorithms, explicit/derived seeding determinism and divergence,
+  unknown-algorithm errors, and mocked-LLM agent behaviour via the
+  `install_fake_llm` fixture (plan-wins merge, gap filling, RuntimeError and
+  garbage fallbacks, input-type contract, validator-mismatch tolerance).
+- `Makefile`: new `test-levelgen` target, wired into `verify-offline`.
+
+**Adjacent bugs noticed (NOT fixed — other phases' scope):**
+1. `backend/validators/__init__.py::LevelLayoutValidator.validate_level`
+   builds `room_names = {room.room_type for room in layout.rooms}` and then
+   checks `layout.start_room` / `layout.end_room` against it — but the
+   Phase-10 engines (and GameIR v2, see `ir_validator`) set those fields to
+   room *ids* (`room_<i>`), not types. Every deterministic layout therefore
+   fails Rule 1 with "Start room 'room_0' does not exist" even though the id
+   resolves fine. Same mismatch poisons Rule 2 (`points_of_interest[*].room`
+   is stored as ids too) and `_has_path_start_to_end`'s `room_map`. Until
+   that is fixed upstream, `LevelGeneratorAgent._validate` tolerates exactly
+   the two stale "does not exist" errors after re-asserting id existence
+   itself, and still hard-fails on genuine errors (overlap, connectivity).
+   Fix belongs in the validators module (compare against `{r.id ...}`).
+2. `wfc` ignores `min_rooms`: collapsed skeletons frequently yield only one
+   large open rectangle, so `_pack_rooms` can return fewer rooms than
+   `params["min_rooms"]` (e.g. 2 rooms for min_rooms=3 on a 48x48 grid).
+   BSP honours the range; WFC treats it as best-effort. A future revision
+   should split oversized sub-rooms until `min_rooms` is met.
+3. `random_walk` / `cellular_automata` room detection
+   (`base.detect_rooms_from_floor`) also ignores `max_rooms`: greedy maximal
+   rectangles over a winding walk produced 184 rooms on a 48x48 grid with
+   max_rooms=8. Layouts stay valid/reachable (the agent caps spawn scatter
+   by room count), but the parameter is silently unenforced outside BSP/WFC.
+4. `base.layout_from_parameters` accepts a raw LLM-proposed `LevelLayout`
+   but discards everything except algorithm/dimensions/POI names; if any
+   caller relies on proposed room geometry being honoured it will be
+   surprised. The function is currently unused by the agent path — consider
+   deleting it or documenting it as a test helper.
+5. `LevelGeneratorInput.max_enemy_density/max_item_density` only feed the
+   validator's warning thresholds; the actual densities come from
+   `level_parameters.enemy_density/item_density`. Nothing clamps the latter
+   against the former, so "max density" is advisory only.
+
+Verification commands (offline):
+- `make test-levelgen` / `python -m pytest tests/test_levelgen.py -v -p no:libtmux`
+- `make verify-offline` (now includes test-levelgen)
