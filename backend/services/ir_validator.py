@@ -355,8 +355,10 @@ def validate_game_ir(
             "quests.no_root",
             "quests",
             "quest graph has no root quest (every quest depends on another; "
-            + ("cycle above" if cycle else "unresolvable")),
+            + ("cycle above" if cycle else "unresolvable"),
         )
+
+    reached: set[str] = set()
     dq = deque(roots)
     while dq:
         cur = dq.popleft()
@@ -485,6 +487,17 @@ def validate_game_ir(
     # ------------------------------------------------------------------ #
     table = model.localization_table
     default_locale = table.default_locale
+    if not table.entries:
+        # Backward compatibility (v1 IRs predate localization_table): an IR
+        # without any locale data cannot be checked for tr() keys — record a
+        # warning and skip the l10n section instead of failing every string.
+        warn(
+            "l10n.empty_locale",
+            "localization_table.entries",
+            f"localization table has no entries; {default_locale!r} tr() key "
+            "checking skipped (v1-shaped IR?)",
+        )
+        return ValidationReport(errors=_dedupe(errors), warnings=_dedupe(warnings))
     if default_locale not in table.entries:
         warn(
             "l10n.empty_locale",
@@ -503,8 +516,35 @@ def validate_game_ir(
                     f"localization_table.entries[{default_locale!r}]",
                 )
 
+    def condition_keys(obj: Any, path: str) -> list[tuple[str, str]]:
+        """Extract tr() keys from a DialogueTree/QuestGraph ``conditions`` dict.
+
+        Supported shapes (documented in the agent_schemas Phase 9 contract):
+        ``{"text_key": ...}``, ``{"keys": [...]}`` and ``{key: display}``
+        mappings whose values are plain strings.
+        """
+        out: list[tuple[str, str]] = []
+        conds = getattr(obj, "conditions", None)
+        if not isinstance(conds, dict):
+            return out
+        tk = conds.get("text_key")
+        if isinstance(tk, str) and tk:
+            out.append((f"{path}.conditions.text_key", tk))
+        keys_field = conds.get("keys")
+        if isinstance(keys_field, list):
+            for j, k in enumerate(keys_field):
+                if isinstance(k, str) and k:
+                    out.append((f"{path}.conditions.keys[{j}]", k))
+        for k, v in conds.items():
+            if k in ("text_key", "keys"):
+                continue
+            if isinstance(v, str) and v:
+                out.append((f"{path}.conditions", k))
+        return out
+
     dialogue_keys: list[tuple[str, str]] = []
     for i, dlg in enumerate(model.dialogues):
+        dialogue_keys.extend(condition_keys(dlg, f"dialogues[{i}]"))
         for j, node in enumerate(dlg.nodes):
             dialogue_keys.append((f"dialogues[{i}].nodes[{j}].text_key", node.text_key))
             for k, choice in enumerate(node.choices):
@@ -521,7 +561,10 @@ def validate_game_ir(
     require_keys(prompt_keys, "interact prompts")
 
     title_keys = [(f"quests[{i}].title", q.title) for i, q in enumerate(model.quests)]
-    require_keys(title_keys, "quest titles")
+    title_keys.extend(
+        key for i, q in enumerate(model.quests) for key in condition_keys(q, f"quests[{i}]")
+    )
+    require_keys(title_keys, "quest titles and quest conditions")
 
     return ValidationReport(errors=_dedupe(errors), warnings=_dedupe(warnings))
 

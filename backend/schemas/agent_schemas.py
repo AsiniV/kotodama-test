@@ -20,6 +20,10 @@ Phase 9 schema contract (verified by tests/test_ir_validator.py):
   components (``EntityComponents``), ``camera``, ``asset_manifest``,
   ``localization_table`` and ``audio_map`` — all with backward-compatible
   defaults so previously persisted v1 IR dicts still validate.
+- Localization convention: every user-visible string referenced by the IR
+  (dialogue node/choice ``text_key``, interactable ``prompt_key``, quest
+  ``title``, and tr()-style keys inside dialogue/quest ``conditions`` dicts)
+  must exist in ``localization_table.entries[default_locale]``.
 - Cross-referential consistency of a GameIR is checked by
   ``backend/services/ir_validator.py`` (not by pydantic), which reports precise
   machine-readable errors instead of raising on the first problem.
