@@ -118,7 +118,12 @@ test-status-health:
 	@echo "Running offline status/health API tests (mocked Redis/DB)..."
 	python -m pytest tests/test_generation_status_health.py -v -p no:libtmux
 
-verify-offline: test-offline smoke-agents test-workspace test-orchestration test-status-health
+# Phase 9: GameIR v2 schema + ir_validator cross-reference checks (offline).
+test-ir-validator:
+	@echo "Running offline GameIR v2 validator tests..."
+	python -m pytest tests/test_ir_validator.py -v -p no:libtmux
+
+verify-offline: test-offline smoke-agents test-workspace test-orchestration test-status-health test-ir-validator
 	@echo "Offline verification complete."
 
 # -----------------------------------------------------------------------------

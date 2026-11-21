@@ -339,3 +339,52 @@ DELETE really removes the workspace and clears durable progress. Tests:
 4. `docker-compose.yml` nginx container still probes the legacy root `/health`
    while the backend service probes `/api/v1/health`; both endpoints exist, but
    the duplication belongs to the deployment-cleanup phase.
+
+## Phase 9 — GameIR v2 + validator (this phase)
+
+**What was built:**
+- `backend/schemas/agent_schemas.py`: GameIR bumped to schema version 2
+  (`GAME_IR_SCHEMA_VERSION = 2`). New fields, all backward-compatible via
+  defaults: `schema_version`, `genre_template_id`, per-entity `EntityComponents`
+  (movement/combat/interactable/quest_giver/sprite), `camera` (CameraConfig),
+  `asset_manifest` (list of AssetManifestEntry), `localization_table`
+  (LocalizationTable), `audio_map` (AudioMap/AudioMapZone), and an optional
+  stable `id` on Room. v1-shaped dicts (no `schema_version`, no v2 fields)
+  still parse cleanly; a *future* `schema_version` is rejected by the validator
+  with `schema.version_unsupported`.
+- `backend/services/ir_validator.py`: `validate_game_ir(ir, project_root=None,
+  check_files=True)` returns a `ValidationReport` (never raises). Checks:
+  referential integrity (entity→dialogue/sfx, quest_giver→quest, sprite→asset,
+  dialogue npc→entity, choice.next→node, audio type mismatch), quest graph
+  acyclicity (DFS cycle path reported) and reachability from root quests,
+  spawn points and positioned entities inside room bounds, start/end room
+  resolution, manifest `res://` path syntax plus on-disk existence under
+  `project_root`, and tr() key presence in the localization table for dialogue
+  text_keys, interact prompt_keys, quest titles and condition dicts. Errors are
+  precise: `(code, dot-path, message)` triples, e.g.
+  `quests.cycle @ quests.q3.requires[0] -> q5 -> q3`.
+- `tests/test_ir_validator.py`: 39 offline tests — good v2 IR passes clean,
+  v1 dict back-compat, and every error code above asserted individually with
+  its dot-path. Makefile target `test-ir-validator` wired into
+  `verify-offline`.
+
+**Adjacent bugs noticed (NOT fixed — other phases' scope):**
+1. `backend/services/godot_integrator.py` (`GodotIntegrator.integrate`) ignores
+   every v2 field: entity components (movement/combat/interactable/
+   quest_giver/sprite), `asset_manifest`, `localization_table`, `audio_map` and
+   `camera` never influence generated scenes/scripts; only legacy
+   `position_x/position_y` are read (lines ~342, ~361). The generator should
+   consume the richer IR or the v2 additions will exist only on paper.
+2. `_build_game_ir` in `backend/services/orchestration.py` (~line 936) emits
+   entities without components or positions and never sets
+   `genre_template_id` / the v2 collections, so orchestrator-produced IRs are
+   effectively v1-shaped. The validator accepts them (backward-compat), but
+   downstream fidelity suffers until the orchestration agents populate v2 data.
+3. Items referenced by `QuestDef.items_required` cannot be cross-checked:
+   there is no item registry in GameIR today, so the validator can only emit
+   `refs.unmodelled_item` warnings. An `items` section belongs to a future IR
+   revision.
+4. Root-level legacy scripts `test_phase9_export.py` / `test_phase9_market*.py`
+   predate this numbering scheme (they test export/marketplace, not the IR) and
+   are not collected by pytest; renaming or folding them into `tests/` would
+   avoid confusion about what "Phase 9" refers to.
