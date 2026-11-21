@@ -1,0 +1,634 @@
+{
+  "asset_manifest": [
+    {
+      "audio_request_id": null,
+      "entity_id": "player",
+      "id": "sprite_player",
+      "kind": "sprite",
+      "path": "res://assets/sprites/player.png"
+    },
+    {
+      "audio_request_id": null,
+      "entity_id": "npc",
+      "id": "sprite_npc",
+      "kind": "sprite",
+      "path": "res://assets/sprites/npc.png"
+    },
+    {
+      "audio_request_id": null,
+      "entity_id": "enemy",
+      "id": "sprite_enemy",
+      "kind": "sprite",
+      "path": "res://assets/sprites/enemy.png"
+    },
+    {
+      "audio_request_id": null,
+      "entity_id": "item",
+      "id": "sprite_item",
+      "kind": "sprite",
+      "path": "res://assets/sprites/item.png"
+    },
+    {
+      "audio_request_id": null,
+      "entity_id": null,
+      "id": "texture_forest",
+      "kind": "other",
+      "path": "res://assets/tilesets/forest.png"
+    }
+  ],
+  "audio_map": {
+    "ambient": [
+      "bgm_main_theme"
+    ],
+    "zones": [
+      {
+        "bgm_id": "bgm_main_theme",
+        "id": "zone_room_0",
+        "rect": [
+          2.0,
+          2.0,
+          14.0,
+          10.0
+        ],
+        "sfx_ids": [
+          "sfx_footstep"
+        ]
+      },
+      {
+        "bgm_id": null,
+        "id": "zone_room_1",
+        "rect": [
+          24.0,
+          6.0,
+          12.0,
+          10.0
+        ],
+        "sfx_ids": [
+          "sfx_footstep"
+        ]
+      },
+      {
+        "bgm_id": null,
+        "id": "zone_room_2",
+        "rect": [
+          44.0,
+          30.0,
+          14.0,
+          12.0
+        ],
+        "sfx_ids": [
+          "sfx_footstep"
+        ]
+      }
+    ]
+  },
+  "audio_requests": [
+    {
+      "description": "Mournful forest theme",
+      "duration_sec": 60,
+      "id": "bgm_main_theme",
+      "loop": true,
+      "type": "bgm"
+    },
+    {
+      "description": "Hopeful beacon finale",
+      "duration_sec": 45,
+      "id": "bgm_beacon",
+      "loop": true,
+      "type": "bgm"
+    },
+    {
+      "description": "Footsteps on moss",
+      "duration_sec": 5,
+      "id": "sfx_footstep",
+      "loop": false,
+      "type": "sfx"
+    },
+    {
+      "description": "Item pickup chime",
+      "duration_sec": 5,
+      "id": "sfx_pickup",
+      "loop": false,
+      "type": "sfx"
+    },
+    {
+      "description": "Eerie wisp hum",
+      "duration_sec": 5,
+      "id": "sfx_wisp_idle",
+      "loop": false,
+      "type": "sfx"
+    }
+  ],
+  "camera": {
+    "deadzone_px": 48,
+    "follow_smoothing": 0.1,
+    "mode": "top_down",
+    "zoom": 1.0
+  },
+  "design_document": {
+    "art_style": "pixel-art",
+    "core_mechanics": [
+      "explore",
+      "talk"
+    ],
+    "dialogue_depth": "branching",
+    "estimated_modules": [
+      "module_player"
+    ],
+    "genre": "adventure",
+    "lore_context": null,
+    "module_dependencies": [
+      "module_player"
+    ],
+    "perspective": "top-down",
+    "quest_complexity": "simple",
+    "scale": "small",
+    "setting": "cursed forest",
+    "target_audience": "everyone",
+    "title": "The Forest Lantern",
+    "unique_selling_points": [
+      "lantern"
+    ]
+  },
+  "dialogues": [
+    {
+      "conditions": {},
+      "dialogue_id": "dlg_elder_intro",
+      "nodes": [
+        {
+          "choices": [
+            {
+              "action": null,
+              "next": "n2",
+              "requires": null,
+              "text_key": "dlg_elder_intro_c_yes"
+            },
+            {
+              "action": null,
+              "next": "END",
+              "requires": null,
+              "text_key": "dlg_elder_intro_c_no"
+            }
+          ],
+          "id": "n1",
+          "speaker": "npc_elder_rowan",
+          "text_key": "dlg_elder_intro_n1"
+        },
+        {
+          "choices": [
+            {
+              "action": "start_quest:q_find_lantern",
+              "next": "END",
+              "requires": null,
+              "text_key": "dlg_elder_intro_c_accept"
+            }
+          ],
+          "id": "n2",
+          "speaker": "npc_elder_rowan",
+          "text_key": "dlg_elder_intro_n2"
+        }
+      ],
+      "npc_id": "npc_elder_rowan",
+      "trigger": "interact"
+    },
+    {
+      "conditions": {},
+      "dialogue_id": "dlg_smith_gossip",
+      "nodes": [
+        {
+          "choices": [
+            {
+              "action": null,
+              "next": "END",
+              "requires": null,
+              "text_key": "dlg_smith_gossip_c_bye"
+            }
+          ],
+          "id": "n1",
+          "speaker": "npc_blacksmith_tor",
+          "text_key": "dlg_smith_gossip_n1"
+        }
+      ],
+      "npc_id": "npc_blacksmith_tor",
+      "trigger": "interact"
+    },
+    {
+      "conditions": {
+        "keys": [
+          "q_light_beacon_s_light"
+        ]
+      },
+      "dialogue_id": "dlg_beacon_intro",
+      "nodes": [
+        {
+          "choices": [
+            {
+              "action": "complete_objective:q_light_beacon.s_light",
+              "next": "END",
+              "requires": null,
+              "text_key": "dlg_beacon_intro_c_ready"
+            }
+          ],
+          "id": "n1",
+          "speaker": "npc_blacksmith_tor",
+          "text_key": "dlg_beacon_intro_n1"
+        }
+      ],
+      "npc_id": "npc_blacksmith_tor",
+      "trigger": "enter_room:beacon_tower"
+    }
+  ],
+  "entities": [
+    {
+      "components": {
+        "combat": null,
+        "interactable": null,
+        "movement": null,
+        "quest_giver": null,
+        "sprite": null
+      },
+      "description": "",
+      "dialogue_id": null,
+      "id": "player",
+      "name": "Player",
+      "position_x": 9.0,
+      "position_y": 7.0,
+      "sfx_ids": [],
+      "sprite": null,
+      "type": "player"
+    },
+    {
+      "components": {
+        "combat": null,
+        "interactable": null,
+        "movement": null,
+        "quest_giver": null,
+        "sprite": null
+      },
+      "description": "",
+      "dialogue_id": null,
+      "id": "npc",
+      "name": "Npc",
+      "position_x": 30.0,
+      "position_y": 11.0,
+      "sfx_ids": [],
+      "sprite": null,
+      "type": "npc"
+    },
+    {
+      "components": {
+        "combat": null,
+        "interactable": null,
+        "movement": null,
+        "quest_giver": null,
+        "sprite": null
+      },
+      "description": "",
+      "dialogue_id": null,
+      "id": "enemy",
+      "name": "Enemy",
+      "position_x": 9.0,
+      "position_y": 7.0,
+      "sfx_ids": [],
+      "sprite": null,
+      "type": "enemy"
+    },
+    {
+      "components": {
+        "combat": null,
+        "interactable": null,
+        "movement": null,
+        "quest_giver": null,
+        "sprite": null
+      },
+      "description": "",
+      "dialogue_id": null,
+      "id": "item",
+      "name": "Item",
+      "position_x": 9.0,
+      "position_y": 6.0,
+      "sfx_ids": [],
+      "sprite": null,
+      "type": "item"
+    },
+    {
+      "components": {
+        "combat": null,
+        "interactable": {
+          "dialogue_id": "dlg_elder_intro",
+          "prompt_key": "dlg_elder_intro_prompt",
+          "trigger": "interact"
+        },
+        "movement": null,
+        "quest_giver": {
+          "quest_ids": [
+            "q_find_lantern"
+          ]
+        },
+        "sprite": null
+      },
+      "description": "Village elder, gives the lantern quest.",
+      "dialogue_id": "dlg_elder_intro",
+      "id": "npc_elder_rowan",
+      "name": "Elder Rowan",
+      "position_x": 9.0,
+      "position_y": 6.0,
+      "sfx_ids": [],
+      "sprite": null,
+      "type": "npc"
+    },
+    {
+      "components": {
+        "combat": null,
+        "interactable": {
+          "dialogue_id": "dlg_smith_gossip",
+          "prompt_key": "dlg_smith_gossip_prompt",
+          "trigger": "interact"
+        },
+        "movement": null,
+        "quest_giver": {
+          "quest_ids": [
+            "q_light_beacon"
+          ]
+        },
+        "sprite": null
+      },
+      "description": "Blacksmith of the village, helps with the beacon.",
+      "dialogue_id": "dlg_smith_gossip",
+      "id": "npc_blacksmith_tor",
+      "name": "Tor",
+      "position_x": 12.0,
+      "position_y": 8.0,
+      "sfx_ids": [],
+      "sprite": null,
+      "type": "npc"
+    },
+    {
+      "components": {
+        "combat": null,
+        "interactable": null,
+        "movement": {
+          "behavior": "walk",
+          "patrol_radius": 0.0,
+          "speed": 96.0
+        },
+        "quest_giver": null,
+        "sprite": null
+      },
+      "description": "The lantern-bearer.",
+      "dialogue_id": null,
+      "id": "player_hero",
+      "name": "Wren",
+      "position_x": 5.0,
+      "position_y": 5.0,
+      "sfx_ids": [
+        "sfx_footstep"
+      ],
+      "sprite": null,
+      "type": "player"
+    },
+    {
+      "components": {
+        "combat": {
+          "attack_cooldown_s": 1.5,
+          "attack_range": 24.0,
+          "damage": 2
+        },
+        "interactable": null,
+        "movement": {
+          "behavior": "patrol",
+          "patrol_radius": 48.0,
+          "speed": 40.0
+        },
+        "quest_giver": null,
+        "sprite": null
+      },
+      "description": "Floating curse mote.",
+      "dialogue_id": null,
+      "id": "enemy_shadow_wisp",
+      "name": "Shadow Wisp",
+      "position_x": 30.0,
+      "position_y": 10.0,
+      "sfx_ids": [
+        "sfx_wisp_idle"
+      ],
+      "sprite": null,
+      "type": "enemy"
+    },
+    {
+      "components": {
+        "combat": null,
+        "interactable": null,
+        "movement": null,
+        "quest_giver": null,
+        "sprite": null
+      },
+      "description": "The stolen lantern.",
+      "dialogue_id": null,
+      "id": "item_lantern",
+      "name": "Lost Lantern",
+      "position_x": 52.0,
+      "position_y": 39.0,
+      "sfx_ids": [
+        "sfx_pickup"
+      ],
+      "sprite": null,
+      "type": "item"
+    }
+  ],
+  "genre_template_id": null,
+  "level_layout": {
+    "algorithm": "bsp",
+    "corridors": [
+      {
+        "end": [
+          24,
+          11
+        ],
+        "start": [
+          16,
+          7
+        ],
+        "width": 2
+      },
+      {
+        "end": [
+          44,
+          36
+        ],
+        "start": [
+          36,
+          11
+        ],
+        "width": 2
+      }
+    ],
+    "end_room": "room_2",
+    "enemy_spawn_points": [
+      [
+        30,
+        10
+      ],
+      [
+        50,
+        36
+      ]
+    ],
+    "grid": null,
+    "height": 48,
+    "item_spawn_points": [
+      [
+        9,
+        6
+      ],
+      [
+        52,
+        39
+      ]
+    ],
+    "points_of_interest": [
+      {
+        "name": "old_shrine",
+        "room": "room_1"
+      }
+    ],
+    "rooms": [
+      {
+        "height": 10,
+        "id": "room_0",
+        "room_type": "village",
+        "width": 14,
+        "x": 2,
+        "y": 2
+      },
+      {
+        "height": 10,
+        "id": "room_1",
+        "room_type": "forest_hollow",
+        "width": 12,
+        "x": 24,
+        "y": 6
+      },
+      {
+        "height": 12,
+        "id": "room_2",
+        "room_type": "beacon_tower",
+        "width": 14,
+        "x": 44,
+        "y": 30
+      }
+    ],
+    "start_room": "room_0",
+    "validation_passed": true,
+    "width": 64
+  },
+  "localization_table": {
+    "default_locale": "en",
+    "entries": {
+      "en": {
+        "Find the Lost Lantern": "Find The Lost Lantern",
+        "Light the Beacon": "Light The Beacon",
+        "dlg_beacon_intro_c_ready": "Dlg Beacon Intro C Ready",
+        "dlg_beacon_intro_n1": "Dlg Beacon Intro N1",
+        "dlg_elder_intro_c_accept": "Dlg Elder Intro C Accept",
+        "dlg_elder_intro_c_no": "Dlg Elder Intro C No",
+        "dlg_elder_intro_c_yes": "Dlg Elder Intro C Yes",
+        "dlg_elder_intro_n1": "Dlg Elder Intro N1",
+        "dlg_elder_intro_n2": "Dlg Elder Intro N2",
+        "dlg_elder_intro_prompt": "Interact with Elder Rowan",
+        "dlg_smith_gossip_c_bye": "Dlg Smith Gossip C Bye",
+        "dlg_smith_gossip_n1": "Dlg Smith Gossip N1",
+        "dlg_smith_gossip_prompt": "Interact with Tor",
+        "q_find_lantern_s_recover": "Q Find Lantern S Recover",
+        "q_find_lantern_s_return": "Q Find Lantern S Return",
+        "q_find_lantern_s_talk_elder": "Q Find Lantern S Talk Elder",
+        "q_light_beacon_s_climb": "Q Light Beacon S Climb",
+        "q_light_beacon_s_light": "Q Light Beacon S Light"
+      }
+    }
+  },
+  "quests": [
+    {
+      "dependencies": [],
+      "description": "Elder Rowan asks you to recover the stolen lantern.",
+      "items_required": [
+        "item_lantern"
+      ],
+      "npcs_involved": [
+        "npc_elder_rowan"
+      ],
+      "quest_id": "q_find_lantern",
+      "stages": [
+        {
+          "conditions": null,
+          "description": "Speak with Elder Rowan",
+          "id": "s_talk_elder",
+          "location": "village",
+          "requirements": null,
+          "rewards": null,
+          "type": "intro"
+        },
+        {
+          "conditions": null,
+          "description": "Recover the lantern from the hollow",
+          "id": "s_recover",
+          "location": "forest_hollow",
+          "requirements": [
+            "item_lantern"
+          ],
+          "rewards": null,
+          "type": "objective"
+        },
+        {
+          "conditions": null,
+          "description": "Return the lantern to Rowan",
+          "id": "s_return",
+          "location": "village",
+          "requirements": null,
+          "rewards": [
+            {
+              "xp": 50
+            }
+          ],
+          "type": "outro"
+        }
+      ],
+      "title": "Find the Lost Lantern"
+    },
+    {
+      "dependencies": [
+        "q_find_lantern"
+      ],
+      "description": "Use the lantern to light the old beacon and lift the curse.",
+      "items_required": [],
+      "npcs_involved": [
+        "npc_blacksmith_tor"
+      ],
+      "quest_id": "q_light_beacon",
+      "stages": [
+        {
+          "conditions": null,
+          "description": "Climb to the beacon",
+          "id": "s_climb",
+          "location": "beacon_tower",
+          "requirements": null,
+          "rewards": null,
+          "type": "objective"
+        },
+        {
+          "conditions": {
+            "text_key": "dlg_beacon_intro_n1"
+          },
+          "description": "Light the beacon",
+          "id": "s_light",
+          "location": "beacon_tower",
+          "requirements": null,
+          "rewards": null,
+          "type": "outro"
+        }
+      ],
+      "title": "Light the Beacon"
+    }
+  ],
+  "schema_version": 2
+}
