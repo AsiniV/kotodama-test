@@ -536,7 +536,7 @@ def generate_wfc(params: Dict[str, Any], *, seed: Optional[int] = None):
                    if tiles[y][x] == E), None)
     _seal_islands(grid, [p for p in (s_cell, e_cell) if p is not None])
 
-    rooms = _pack_rooms(grid, params, width, height)
+    rooms, min_room_w, min_room_h = _pack_rooms(grid, params, width, height)
 
     # Chain order: closest-next walk starting at the room containing S and
     # ending at the room containing E (falls back to first/last rooms), so
