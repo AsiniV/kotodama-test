@@ -14,6 +14,19 @@ Phase 2 schema contract (verified by tests/test_schema_contracts.py):
   outputs are wrapped in object models: ``QuestGraphList``, ``DialogueTreeList``
   (and ``PromptUpdates``). Agents pass these wrapper *classes* to
   ``BaseAgent._call_llm(prompt, response_model)`` — never ``type(list[...])``.
+
+Phase 9 schema contract (verified by tests/test_ir_validator.py):
+- ``GameIR`` is versioned (``schema_version``, GameIR v2) and carries entity
+  components (``EntityComponents``), ``camera``, ``asset_manifest``,
+  ``localization_table`` and ``audio_map`` — all with backward-compatible
+  defaults so previously persisted v1 IR dicts still validate.
+- Localization convention: every user-visible string referenced by the IR
+  (dialogue node/choice ``text_key``, interactable ``prompt_key``, quest
+  ``title``, and tr()-style keys inside dialogue/quest ``conditions`` dicts)
+  must exist in ``localization_table.entries[default_locale]``.
+- Cross-referential consistency of a GameIR is checked by
+  ``backend/services/ir_validator.py`` (not by pydantic), which reports precise
+  machine-readable errors instead of raising on the first problem.
 """
 
 from pydantic import BaseModel, ConfigDict, Field
@@ -88,6 +101,65 @@ class AudioRequest(BaseModel):
     loop: bool = Field(default=False, description="Зацикливать ли звук (для BGM)")
 
 
+# ============================================================================
+# Entity Components (GameIR v2 — Phase 9)
+# ============================================================================
+
+
+class MovementComponent(BaseModel):
+    """How an entity moves. ``behavior`` is free-form ('static', 'patrol', ...)."""
+
+    behavior: str = "static"
+    speed: float = Field(default=0.0, ge=0.0)
+    patrol_radius: float = Field(default=0.0, ge=0.0)
+
+
+class CombatComponent(BaseModel):
+    """Damage model for hostile entities."""
+
+    damage: int = Field(default=1, ge=0)
+    attack_range: float = Field(default=32.0, ge=0.0)
+    attack_cooldown_s: float = Field(default=1.0, gt=0.0)
+
+
+class InteractableComponent(BaseModel):
+    """Player-triggered interaction; ``dialogue_id`` must reference a DialogueTree."""
+
+    trigger: Literal["interact", "proximity", "pickup"] = "interact"
+    prompt_key: Optional[str] = Field(
+        default=None, description="Localization key shown as the interaction prompt"
+    )
+    dialogue_id: Optional[str] = Field(
+        default=None, description="ID of the DialogueTree opened by this interaction"
+    )
+
+
+class QuestGiverComponent(BaseModel):
+    """Quests offered by this entity; IDs must reference QuestGraph.quest_id."""
+
+    quest_ids: List[str] = Field(default_factory=list)
+
+
+class SpriteComponent(BaseModel):
+    """Visual representation; ``asset_id`` references AssetManifestEntry.id when set."""
+
+    asset_id: Optional[str] = Field(
+        default=None, description="Asset manifest entry id (res:// sprite asset)"
+    )
+    flip_h: bool = False
+    z_index: int = 0
+
+
+class EntityComponents(BaseModel):
+    """Optional ECS-style component bundle attached to an EntityRequest (Phase 9)."""
+
+    movement: Optional[MovementComponent] = None
+    combat: Optional[CombatComponent] = None
+    interactable: Optional[InteractableComponent] = None
+    quest_giver: Optional[QuestGiverComponent] = None
+    sprite: Optional[SpriteComponent] = None
+
+
 class EntityRequest(BaseModel):
     """Сущность игрового мира (NPC, объект, враг) для Godot-интегратора.
 
@@ -106,6 +178,10 @@ class EntityRequest(BaseModel):
     sfx_ids: List[str] = Field(
         default_factory=list,
         description="ID звуковых эффектов из AudioRequest (type='sfx'), которые издаёт эта сущность",
+    )
+    components: EntityComponents = Field(
+        default_factory=EntityComponents,
+        description="Компоненты сущности (movement/combat/interactable/quest_giver/sprite) — GameIR v2",
     )
 
 
@@ -414,6 +490,11 @@ class Room(BaseModel):
     width: int
     height: int
     room_type: str
+    id: Optional[str] = Field(
+        default=None,
+        description="Стабильный идентификатор комнаты ('room_0'); "
+        "если отсутствует — вычисляется как 'room_{index}' (GameIR v2, Phase 9)",
+    )
 
 
 class Corridor(BaseModel):
@@ -480,18 +561,88 @@ class LocalizationInput(BaseModel):
 # Game IR — корневая схема (объявлена после всех зависимых схем)
 # ============================================================================
 
+#: Текущая версия схемы GameIR (GameIR v2 — Phase 9).
+GAME_IR_SCHEMA_VERSION = 2
+
+
+class CameraConfig(BaseModel):
+    """Камера игрока; значения совпадают с настройками godot_core camera controller."""
+
+    mode: Literal["top_down", "platformer", "first_person"] = "top_down"
+    follow_smoothing: float = Field(default=0.1, ge=0.0, le=1.0)
+    zoom: float = Field(default=1.0, gt=0.0)
+    deadzone_px: int = Field(default=48, ge=0)
+
+
+class AssetManifestEntry(BaseModel):
+    """Одна запись манифеста ассетов. ``path`` — res://-путь внутри Godot-проекта."""
+
+    id: str = Field(..., description="Уникальный ID ассета")
+    path: str = Field(..., description="res:// путь к файлу внутри проекта")
+    kind: Literal["sprite", "audio", "music", "tileset", "ui", "font", "other"] = "sprite"
+    entity_id: Optional[str] = Field(
+        default=None, description="Ссылка на EntityRequest.id (для спрайтов сущностей)"
+    )
+    audio_request_id: Optional[str] = Field(
+        default=None, description="Ссылка на AudioRequest.id (для аудио-ассетов)"
+    )
+
+
+class LocalizationTable(BaseModel):
+    """Локализационная таблица: locale -> (ключ -> строка). Ключи используются в tr()."""
+
+    default_locale: str = "en"
+    entries: dict[str, dict[str, str]] = Field(default_factory=dict)
+
+    def keys_for(self, locale: str) -> set[str]:
+        """Return the set of tr() keys defined for *locale* (empty if unknown)."""
+        return set(self.entries.get(locale, {}))
+
+
+class AudioMapZone(BaseModel):
+    """Звуковая зона уровня: привязка BGM/SFX к прямоугольной области."""
+
+    id: str
+    rect: tuple[float, float, float, float] = Field(
+        ..., description="(x, y, width, height) в пикселях уровня"
+    )
+    bgm_id: Optional[str] = Field(default=None, description="AudioRequest.id (type='bgm')")
+    sfx_ids: List[str] = Field(default_factory=list)
+
+
+class AudioMap(BaseModel):
+    """Карта звука уровня: зоны + глобальные эмбиент-слои."""
+
+    zones: List[AudioMapZone] = Field(default_factory=list)
+    ambient: List[str] = Field(
+        default_factory=list, description="ID фоновых слоёв из AudioRequest (bgm или sfx)"
+    )
+
+
 class GameIR(BaseModel):
     """Game Intermediate Representation — корневая схема игры для пайплайна.
 
     Агрегирует GDD, структурированные запросы на аудио, сущности мира,
     квесты и диалоги — всё, что нужно Godot-интегратору для сборки проекта.
+
+    GameIR v2 (Phase 9) добавляет ``schema_version``, ``genre_template_id``,
+    компоненты сущностей (:class:`EntityComponents`), ``camera``,
+    ``asset_manifest``, ``localization_table`` и ``audio_map`` — все новые поля
+    имеют безопасные значения по умолчанию, поэтому сериализованные IR версии 1
+    загружаются без изменений (backward compatibility).
     """
+    schema_version: int = GAME_IR_SCHEMA_VERSION
+    genre_template_id: Optional[str] = None
     design_document: Optional[GameDesignDocument] = None
     audio_requests: List[AudioRequest] = Field(default_factory=list)
     entities: List[EntityRequest] = Field(default_factory=list)
     quests: List[QuestGraph] = Field(default_factory=list)
     dialogues: List[DialogueTree] = Field(default_factory=list)
     level_layout: Optional[LevelLayout] = None
+    camera: CameraConfig = Field(default_factory=CameraConfig)
+    asset_manifest: List[AssetManifestEntry] = Field(default_factory=list)
+    localization_table: LocalizationTable = Field(default_factory=LocalizationTable)
+    audio_map: AudioMap = Field(default_factory=AudioMap)
 
 
 # ============================================================================
