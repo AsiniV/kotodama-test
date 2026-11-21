@@ -27,6 +27,7 @@ from .base import (
     ALGORITHMS,
     Grid,
     generate_layout,
+    layout_from_parameters,
     normalize_level_parameters,
     resolve_seed,
 )
@@ -39,6 +40,7 @@ __all__ = [
     "ALGORITHMS",
     "Grid",
     "generate_layout",
+    "layout_from_parameters",
     "normalize_level_parameters",
     "resolve_seed",
     "generate_bsp",
