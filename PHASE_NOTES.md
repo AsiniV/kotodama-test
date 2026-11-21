@@ -456,3 +456,44 @@ Scope delivered:
 Verification commands (offline):
 - `make test-levelgen` / `python -m pytest tests/test_levelgen.py -v -p no:libtmux`
 - `make verify-offline` (now includes test-levelgen)
+
+## Phase 11 — GameIR assembler + final cleanup: close-out (2026-11-22)
+
+Scope of this phase: wire the `ir_assembler` node into the pipeline (assembly,
+validation, error attribution, bounded repair retries), ship
+`tests/test_ir_assembler.py`, and perform final cleanup — temporary repro
+script `scripts/_repro11.py` deleted (`git rm -f`), new `test-ir-assembler`
+Makefile target added to `.PHONY`, `help` and `verify-offline`.
+
+**Adjacent bugs noticed (NOT fixed — other phases' scope):**
+1. `backend/services/ir_assembler.py::_build_entities` step 3 reads explicit
+   entity requests via `state.get("entities")`, but `GenerationState`
+   (`backend/services/orchestration.py`) has no `entities` key at all — no
+   producer ever populates it (the field exists only on the `GameIR` schema).
+   The loop is therefore dead code in every real run: designer/coder-authored
+   `EntityRequest`s can never reach the IR except through the slot/NPC
+   derivation paths. Either add `entities` to `GenerationState` with an
+   upstream producer, or drop the branch.
+2. `l10n.missing_key` errors are attributed to the `localization` node
+   (`_LOCALIZATION_CODES` in `ir_assembler.attribute_ir_errors`), but that
+   repair route is effectively non-repairable: the Localization Manager runs
+   *after* the ir_assembler in the graph and `_run_localization` does not
+   inject `_ir_repair_context` into its input, so looping back through
+   `"repair:localization"` re-runs qa/playtest/localization without giving
+   the manager the feedback text — the same missing keys reassemble verbatim
+   until MAX_IR_RETRIES is exhausted and the run fails/rolls back. Fix: pass
+   the feedback into `LocalizationInput` (needs an `extra_context` field) or
+   route l10n errors to the section-owning agent instead.
+3. `_build_localization_table` seeds humanised *placeholder* strings
+   (`key.replace("_", " ").title()`, `"Interact with …"`) for every tr() key
+   referenced by quests/dialogues/entities, using `setdefault` semantics that
+   the Localization Manager's post-playtest output then cannot overwrite at
+   commit time — the assembled IR shipped to the Godot integrator keeps the
+   placeholders while the real translations are only written to
+   `assets/localization/*.json` files. Either regenerate/re-validate the IR
+   after localization, or have the commit step merge `localization_output`
+   back into `game_ir.localization_table`.
+
+Verification commands (offline):
+- `make test-ir-assembler` / `python -m pytest tests/test_ir_assembler.py -v -p no:libtmux`
+- `make verify-offline` (now includes test-ir-assembler)
