@@ -98,19 +98,30 @@ def _build_adjacency(
 #: (order: north, south, west, east). Declared as *directed* permissions
 #: and closed under symmetry by :func:`_build_adjacency` — the pair
 #: relation is symmetric by construction, which is what keeps AC-3
-#: propagation confluent. The growth biases are expressed through the
-#: opposite-direction rows: a floor may sit south/east of a wall (W's
-#: south/east rows), so walls must never expand north/west into floors;
-#: likewise floors/corridors only ever touch the border frame from the
-#: south/east side, so no walkable tile can reach row/column 0 or the last
-#: row/column.
+#: propagation confluent.
+#:
+#: Phase 10 border fix, take two: the previous table also forbade walls
+#: *north/west* of floors ("floors never expand north/west into walls"),
+#: which silently removed ``W`` from the north/west rows above. That made
+#: the frame itself unsatisfiable: a corner ``B`` needs a wall neighbour
+#: that is simultaneously floor-free to its south *and* east — impossible,
+#: because every such wall still permits ``W`` in one direction, so AC-3
+#: emptied a frame domain before a single cell was even collapsed (WFC
+#: then failed for *every* seed). The rule table now only expresses the
+#: compactness bias where it is safe (south/east of walls stay walls;
+#: floors stay away from the S/E terminals except along declared edges),
+#: while ``B``'s own rows permit any interior tile, keeping the border
+#: frame trivially satisfiable. Walkability never touches the frame
+#: because ``B`` is pre-assigned and absent from interior domains.
 ADJACENCY: Dict[str, Tuple[Set[str], Set[str], Set[str], Set[str]]] = _build_adjacency({
-    # Border wall: seals the map edge; only plain walls may touch it from
-    # the inside (north/west neighbours of interior walls), keeping every
-    # walkable tile off the frame by construction.
+    # Border wall: seals the map edge. Its rows list only itself; the
+    # symmetry closure lets every interior tile that "may touch B" appear
+    # next to the frame, so the stamped border never contradicts whatever
+    # collapses just inside it.
     B: (_BORDER, _BORDER, _BORDER, _BORDER),
-    # Solid wall: only walls to the south/east (keeps floor blobs compact);
-    # north/west may be anything so corridors can pass beside walls.
+    # Solid wall: may face anything (the frame and open terrain included);
+    # only walls continue south/east of a wall, which keeps floor blobs
+    # compact and gives collapse a strong all-wall attractor.
     W: (_ANY | _BORDER, {W}, _ANY | _BORDER, {W}),
     # Open floor: stays compact — only other floors continue it south/east;
     # the S/E terminals connect along the corridor network instead.
