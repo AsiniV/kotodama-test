@@ -106,6 +106,10 @@ DESCRIPTION: {wizard_input.text_description}
         if input_data.lore_context:
             prompt += f"\nLORE CONTEXT:\n{input_data.lore_context}\n"
 
+        # Phase 11: IR-repair feedback from the ir_assembler node (if any).
+        if getattr(input_data, "extra_context", None):
+            prompt += f"\nVALIDATION FEEDBACK (fix these in your output):\n{input_data.extra_context}\n"
+
         prompt += "\n\nThe GDD must echo quest_complexity and dialogue_depth from the wizard input."
         prompt += "\n\nGenerate a comprehensive GDD following the rules in the system prompt."
 

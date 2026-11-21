@@ -64,6 +64,7 @@ class DesignerInput(BaseModel):
     """Single input model for the Game Designer agent."""
     wizard_input: WizardInput
     lore_context: Optional[str] = None
+    extra_context: Optional[str] = None  # Phase 11: IR-repair feedback appended to the prompt
 
 
 class GameDesignDocument(BaseModel):
@@ -245,6 +246,7 @@ class QuestDesignerInput(BaseModel):
     design_document: GameDesignDocument
     architecture_plan: Optional[ArchitecturePlan] = None
     lore_context: Optional[str] = None
+    extra_context: Optional[str] = None  # Phase 11: IR-repair feedback appended to the prompt
     item_registry: list[str] = Field(default_factory=list)
     npc_registry: list[str] = Field(default_factory=list)
     location_registry: list[str] = Field(default_factory=list)
@@ -294,6 +296,7 @@ class DialogueWriterInput(BaseModel):
     design_document: GameDesignDocument
     quest_graphs: list[QuestGraph] = Field(default_factory=list)
     lore_context: Optional[str] = None
+    extra_context: Optional[str] = None  # Phase 11: IR-repair feedback appended to the prompt
     localization_keys: list[str] = Field(default_factory=list)
     item_registry: list[str] = Field(default_factory=list)
     flag_registry: list[str] = Field(default_factory=list)
@@ -394,6 +397,7 @@ class CoderInput(BaseModel):
     dialogue_trees: Optional[list[DialogueTree]] = None
     asset_paths: Optional[list[str]] = None
     level_layout: Optional[dict] = None
+    extra_context: Optional[str] = None  # Phase 11: IR-repair feedback appended to the prompt
 
 
 class CoderOutput(BaseModel):
