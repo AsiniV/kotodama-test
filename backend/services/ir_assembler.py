@@ -553,6 +553,19 @@ def assemble_game_ir(
         for idx, room in enumerate(layout.rooms):
             if not getattr(room, "id", None):
                 room.id = _room_id(room, idx)
+        # Legacy agent/stub layouts may still reference rooms by the pre-v2
+        # positional names ('r0', 'r1').  Remap only those exact legacy forms;
+        # any other unknown start/end ref stays untouched so the validator
+        # reports level.unknown_start_room / level.unknown_end_room (which the
+        # orchestrator attributes to level_generator for a bounded repair).
+        room_ids = {room.id for room in layout.rooms}
+        positional = {f"r{idx}": room.id for idx, room in enumerate(layout.rooms)}
+        for endpoint in ("start_room", "end_room"):
+            current = getattr(layout, endpoint, None)
+            if isinstance(current, str) and current not in room_ids:
+                replacement = positional.get(current)
+                if replacement is not None:
+                    setattr(layout, endpoint, replacement)
 
     quests = [q for q in (_model(q, QuestGraph) for q in _as_list(get("quest_graphs"))) if q is not None]
     dialogues = [d for d in (_model(d, DialogueTree) for d in _as_list(get("dialogue_trees"))) if d is not None]
