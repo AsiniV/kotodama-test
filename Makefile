@@ -8,7 +8,7 @@
 
 .PHONY: help setup dev dev-backend dev-frontend test build deploy backup clean lint migrate \
         docker-up docker-down docker-up-infra logs ollama-pull minio-create-buckets \
-        test-offline smoke-agents test-workspace test-orchestration test-status-health test-ir-validator verify-offline
+        test-offline smoke-agents test-workspace test-orchestration test-status-health test-ir-validator test-levelgen verify-offline
 
 # -----------------------------------------------------------------------------
 # HELP
@@ -40,6 +40,7 @@ help:
 	@echo "  test-orchestration   Phase 5 offline orchestrator dry-run tests (stub agents)"
 	@echo "  test-status-health   Phase 7 offline real status/health endpoint tests"
 	@echo "  test-ir-validator    Phase 9 GameIR v2 schema + validator offline tests"
+	@echo "  test-levelgen        Phase 10 deterministic levelgen + agent wrapper offline tests"
 	@echo "  verify-offline       Full offline verification (tests + smoke + workspace)"
 
 # -----------------------------------------------------------------------------
@@ -123,7 +124,12 @@ test-ir-validator:
 	@echo "Running offline GameIR v2 validator tests..."
 	python -m pytest tests/test_ir_validator.py -v -p no:libtmux
 
-verify-offline: test-offline smoke-agents test-workspace test-orchestration test-status-health test-ir-validator
+# Phase 10: deterministic levelgen (4 algorithms) + LevelGeneratorAgent wrapper.
+test-levelgen:
+	@echo "Running offline deterministic levelgen tests..."
+	python -m pytest tests/test_levelgen.py -v -p no:libtmux
+
+verify-offline: test-offline smoke-agents test-workspace test-orchestration test-status-health test-ir-validator test-levelgen
 	@echo "Offline verification complete."
 
 # -----------------------------------------------------------------------------

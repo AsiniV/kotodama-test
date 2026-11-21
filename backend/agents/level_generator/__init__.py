@@ -17,12 +17,18 @@ Flow of :meth:`LevelGeneratorAgent.execute`:
    derived from the plan itself — generation never blocks on the model.
 3. Merge: architect ``level_parameters`` always win over the proposal; an
    explicit ``seed`` in the params pins reproducibility end-to-end.
-4. Delegate to ``generate_layout`` and validate the resulting layout with
-   ``LevelLayoutValidator`` (density thresholds come from the input model).
+4. Validate the resulting layout with ``LevelLayoutValidator`` (density
+   thresholds come from the input model).  The deterministic engines stamp
+   ``start_room``/``end_room`` as GameIR v2 room *ids* (``room_<i>``), while
+   the pre-existing validator compares them against ``room_type`` values —
+   a known Phase-10 adjacent bug (see PHASE_NOTES.md).  Until the validator
+   is fixed upstream, the wrapper tolerates exactly that id-vs-room_type
+   mismatch via :meth:`_validate` and re-asserts start/end existence against
+   the real room ids itself, so generation never blocks on the stale check.
 """
 
 import logging
-from typing import Any, Dict, Optional
+from typing import Any, Dict, List, Optional
 
 from backend.agents.base import BaseAgent
 from backend.schemas.agent_schemas import (
@@ -114,26 +120,67 @@ Output MUST be valid JSON matching the given parameter schema. No extra keys."""
         # always yield byte-identical layouts.
         result = generate_layout(merged)
 
-        # Validate generated level
-        validator = create_level_validator(
+        self._validate(
+            result,
             max_enemy_density=input_data.max_enemy_density,
-            max_item_density=input_data.max_item_density
+            max_item_density=input_data.max_item_density,
         )
-
-        validation_result = validator.validate_level(result)
-
-        if not validation_result.passed:
-            error_msg = f"Level validation failed: {'; '.join(validation_result.errors)}"
-            logger.error(error_msg)
-            raise ValueError(error_msg)
-
-        for warning in validation_result.warnings:
-            logger.warning(f"Level warning: {warning}")
 
         # Mark as validated
         result.validation_passed = True
 
         logger.info(f"Generated and validated {len(result.rooms)} rooms using {result.algorithm}")
+        return result
+
+    def _validate(
+        self,
+        layout: LevelLayout,
+        *,
+        max_enemy_density: float,
+        max_item_density: float,
+    ) -> ValidationResult:
+        """Run ``LevelLayoutValidator`` while tolerating its known id-vs-type bug.
+
+        The deterministic engines set ``start_room``/``end_room`` to GameIR v2
+        room *ids* (``room_<i>``), but the pre-existing validator compares
+        them against the set of ``room_type`` values (see PHASE_NOTES.md,
+        Phase 10 adjacent bugs).  We therefore drop exactly those two stale
+        "does not exist" errors from the validator's report — after asserting
+        ourselves that the ids really resolve to rooms — and fail hard on any
+        other error (overlap, connectivity, POI integrity).
+        """
+        validator = create_level_validator(
+            max_enemy_density=max_enemy_density,
+            max_item_density=max_item_density,
+        )
+        validation_result = validator.validate_level(layout)
+
+        room_ids = {r.id or f"room_{i}" for i, r in enumerate(layout.rooms)}
+        for endpoint in (layout.start_room, layout.end_room):
+            if endpoint not in room_ids:
+                error_msg = f"Level validation failed: room id '{endpoint}' does not exist"
+                logger.error(error_msg)
+                raise ValueError(error_msg)
+
+        stale_prefixes = (
+            f"Start room '{layout.start_room}' does not exist",
+            f"End room '{layout.end_room}' does not exist",
+        )
+        remaining_errors: List[str] = [
+            err for err in validation_result.errors if err not in stale_prefixes
+        ]
+        if remaining_errors:
+            error_msg = f"Level validation failed: {'; '.join(remaining_errors)}"
+            logger.error(error_msg)
+            raise ValueError(error_msg)
+
+        # Rebuild the report so it reflects the tolerated check: the raw
+        # validator's ``passed`` flag is False purely because of its stale
+        # id-vs-room_type comparison, which we have re-asserted above.
+        result = ValidationResult(passed=True, errors=[], warnings=list(validation_result.warnings))
+
+        for warning in result.warnings:
+            logger.warning(f"Level warning: {warning}")
         return result
 
     async def _propose_parameters(
