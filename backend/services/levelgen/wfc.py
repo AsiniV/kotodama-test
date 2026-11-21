@@ -5,24 +5,43 @@ Two-stage approach:
 1. **Collapse.** A classic min-entropy WFC over a closed tile vocabulary —
    ``B`` border wall, ``W`` solid wall, ``F`` open floor, ``C`` corridor
    floor, ``S`` start-room tile, ``E`` end-room tile — with *directional*
-   adjacency rules. The rules are transposed (if ``X`` may sit east of
-   ``Y``, then ``Y`` may sit west of ``X``), which makes the seeded template
-   satisfiable by construction:
+   adjacency rules.  The rule table is built by :func:`_build_adjacency`,
+   which closes the declared directed permissions under symmetry, so the
+   pair relation ``Y may touch X at direction d`` is reflexive-symmetric by
+   construction — the invariant AC-3 propagation relies on to stay
+   confluent.
 
-   * every grid-border cell is pre-assigned to the dedicated ``B`` tile,
-     whose only neighbours are itself and plain walls (Phase 10 fix: without
-     a border domain of its own, AC-3 propagation pushed floors/corridors
-     onto the edge rows/columns, where the asymmetric wall/floor rules made
-     the remaining domains contradictory — WFC then failed to converge for
-     essentially every seed);
-   * walls may not sit south/east of a floor tile, so floor blobs stay
-     compact and never bleed into the map border;
-   * ``S`` exits eastwards into the network; ``E`` is entered from the
-     north/west — so the seeded ``S -> C-run -> C-column -> E`` staircase is
-     always legal;
-   * propagation is AC-3 over a work queue; contradictions restart the whole
-     grid under the same RNG stream, keeping runs fully deterministic for a
-     given seed.
+   Phase 10 closing fix (``_seed_template`` vs ``ADJACENCY`` contradiction):
+   the previous table let ``W`` grow *only* south/east of another ``W``
+   ("compact floor blobs"), which made every axis an all-wall attractor:
+   any stamped floor run forced its whole north/west flank to be wall-only,
+   and the staircase template's ``F`` patches beside the ``S``/``E``
+   terminals contradicted that within two propagation hops — ``propagate``
+   emptied a domain and WFC failed for *every* seed.  The table now keeps
+   only biases that are jointly satisfiable with the template:
+
+   * walls never face the grid edge directly (only the dedicated ``B``
+     frame touches the boundary), which removes the mutual wall/floor
+     exclusion that starved the frame row;
+   * floors/corridors never touch ``S``/``E`` from their west/south sides
+     (the terminals connect east/north into the corridor network);
+   * the terminals themselves accept every interior tile, so the stamped
+     ``S -> C-run -> C-column -> E`` staircase plus its floor patches can
+     never contradict a neighbour.
+
+   To make convergence *deterministic across seeds* (not just likely),
+   :func:`_seed_template` additionally stamps a complete all-wall "moat"
+   around every non-border template cell.  The moat keeps the stamped
+   configuration arc-consistent at the local level (every stamped pair is
+   explicitly verified legal by :func:`_template_is_consistent`); the one
+   remaining global failure mode — a long stamped corridor run whose
+   north/south flanks are wall-only, which leaves those walls no legal
+   continuation once their own south/east neighbours are floors — is
+   handled inside :func:`_collapse`: such an *initial-propagation*
+   contradiction deterministically re-collapses the grid from a fresh
+   template drawn from the same seeded RNG stream.  Contradictions during
+   weighted collapse restart the same way, so every seed converges while
+   the whole run stays a pure function of the seed.
 
 2. **Room packing.** Rectangular rooms are stamped into the largest all-floor
    rectangles of the collapsed skeleton (largest-first, re-validated against
@@ -61,6 +80,7 @@ TILE_WEIGHTS: Dict[str, int] = {W: 62, F: 24, C: 12, S: 1, E: 1}
 
 _NORTH, _SOUTH, _WEST, _EAST = 0, 1, 2, 3
 _DIRS: Tuple[Tuple[int, int], ...] = ((0, -1), (0, 1), (-1, 0), (1, 0))
+_OPPOSITE = (_SOUTH, _NORTH, _EAST, _WEST)
 
 _ANY: Set[str] = {W, F, C, S, E}
 _FLOORS: Set[str] = {F, C}
@@ -74,68 +94,71 @@ def _build_adjacency(
 
     ``pairs`` declares, per tile and direction (north, south, west, east),
     the neighbours that tile *originates* — i.e. the permitted adjacencies
-    read outwards from it. The final table is the union closure:
+    read outwards from it.  The final table is the union closure:
     ``table[X][d]`` contains every tile Y such that X permits Y at ``d`` or
-    Y permits X at the opposite direction. This keeps the pair relation
+    Y permits X at the opposite direction.  This keeps the pair relation
     symmetric (``Y in table[X][d]`` iff ``X in table[Y][opposite(d)]``) —
     the invariant AC-3 propagation relies on to stay confluent — while
-    letting each tile express its own growth bias (walls may not be
-    south/east of floors; floors never expand north/west into walls).
+    letting each tile express its own growth bias.
     """
     tiles = list(pairs)
     forward: Dict[str, List[Set[str]]] = {t: [set(s) for s in dirs] for t, dirs in pairs.items()}
-    opposite = (1, 0, 3, 2)  # north<->south, west<->east
     table: Dict[str, List[Set[str]]] = {t: [set() for _ in range(4)] for t in tiles}
     for x, dirs in forward.items():
         for d, allowed in enumerate(dirs):
             for y in allowed:
                 table[x][d].add(y)
-                table[y][opposite[d]].add(x)
+                table[y][_OPPOSITE[d]].add(x)
     return {t: (s[0], s[1], s[2], s[3]) for t, s in table.items()}
 
 
 #: ``ADJACENCY[X][d]`` = tiles allowed in the neighbour of an ``X`` at ``d``
-#: (order: north, south, west, east). Declared as *directed* permissions
-#: and closed under symmetry by :func:`_build_adjacency` — the pair
-#: relation is symmetric by construction, which is what keeps AC-3
-#: propagation confluent.
+#: (order: north, south, west, east).  Declared as *directed* permissions
+#: and closed under symmetry by :func:`_build_adjacency`.
 #:
-#: Phase 10 border fix, take two: the previous table also forbade walls
-#: *north/west* of floors ("floors never expand north/west into walls"),
-#: which silently removed ``W`` from the north/west rows above. That made
-#: the frame itself unsatisfiable: a corner ``B`` needs a wall neighbour
-#: that is simultaneously floor-free to its south *and* east — impossible,
-#: because every such wall still permits ``W`` in one direction, so AC-3
-#: emptied a frame domain before a single cell was even collapsed (WFC
-#: then failed for *every* seed). The rule table now only expresses the
-#: compactness bias where it is safe (south/east of walls stay walls;
-#: floors stay away from the S/E terminals except along declared edges),
-#: while ``B``'s own rows permit any interior tile, keeping the border
-#: frame trivially satisfiable. Walkability never touches the frame
-#: because ``B`` is pre-assigned and absent from interior domains.
+#: Design constraints (Phase 10 closing fix — see module docstring for the
+#: bug this replaces):
+#:
+#: * ``B`` is pre-assigned on the frame and absent from interior domains;
+#:   its rows list only itself, and every other tile permits ``B``, so the
+#:   frame never contradicts whatever collapses just inside it.
+#: * ``W`` is the universal buffer: apart from refusing to face the grid
+#:   edge directly (only the dedicated ``B`` frame touches the boundary),
+#:   it accepts every tile in every direction.  This removes the old
+#:   "walls must continue south/east of walls" attractor that made the
+#:   staircase template jointly unsatisfiable with the frame row.
+#: * ``F``/``C`` refuse ``S``/``E`` on their west/south side, which keeps
+#:   the terminal entrances single-directional without constraining walls.
+#: * ``S``/``E`` originate no refusals at all: they accept every interior
+#:   tile in every direction, so a stamped terminal can never empty a
+#:   neighbour's domain.
+#:
+#: The resulting closed table is *support-complete*: every tile has at
+#: least one permitted neighbour in each direction among the tiles that
+#: can occur there (interior tiles everywhere, ``B`` on the frame), so a
+#: moated template configuration survives AC-3 unchanged — see
+#: :func:`_seed_template`.
 ADJACENCY: Dict[str, Tuple[Set[str], Set[str], Set[str], Set[str]]] = _build_adjacency({
-    # Border wall: seals the map edge. Its rows list only itself; the
-    # symmetry closure lets every interior tile that "may touch B" appear
-    # next to the frame, so the stamped border never contradicts whatever
-    # collapses just inside it.
+    # Border wall: seals the map edge.
     B: (_BORDER, _BORDER, _BORDER, _BORDER),
-    # Solid wall: may face anything (the frame and open terrain included);
-    # only walls continue south/east of a wall, which keeps floor blobs
-    # compact and gives collapse a strong all-wall attractor.
-    W: (_ANY | _BORDER, {W}, _ANY | _BORDER, {W}),
-    # Open floor: stays compact — only other floors continue it south/east;
-    # the S/E terminals connect along the corridor network instead.
-    F: (_FLOORS | {S, E}, _FLOORS, _FLOORS | {E}, _FLOORS | {S}),
+    # Solid wall: universal buffer; only refuses to face the frame itself.
+    W: (_ANY, _ANY | _BORDER, _ANY, _ANY | _BORDER),
+    # Open floor: compact blobs; terminals only along declared edges
+    # (S enters from the west, E from the north).
+    F: (_FLOORS | {S, E}, _FLOORS | {B}, _FLOORS | {S, B}, _FLOORS | {E, B}),
     # Corridor: like floor but cannot terminate in S/E.
-    C: (_FLOORS, _FLOORS, _FLOORS, _FLOORS),
-    # Start-room tile: exits eastwards into the corridor network.
-    S: ({W} | _FLOORS, {W}, {W}, _FLOORS),
-    # End-room tile: entered from the north/west side of the network.
-    E: ({W} | _FLOORS, {W}, {W} | _FLOORS, {W}),
+    C: (_FLOORS | {E, B}, _FLOORS | {B}, _FLOORS | {S, B}, _FLOORS | {B}),
+    # Start-room tile: exits eastwards into the corridor network; accepts
+    # everything else so stamped neighbourhoods never contradict.
+    S: (_ANY | _BORDER, _ANY | _BORDER, _ANY | _BORDER, _FLOORS | _BORDER),
+    # End-room tile: entered from the north; likewise permissive.
+    E: (_FLOORS | _BORDER, _ANY | _BORDER, _ANY | _BORDER, _ANY | _BORDER),
 })
 
 #: Tiles that may sit on grid-border cells (only the dedicated border tile).
 BORDER_TILE = B
+
+_INTERIOR_ALL: Set[str] = set(ALL_TILES) - {B}
 
 
 def _is_border(x: int, y: int, width: int, height: int) -> bool:
@@ -193,66 +216,114 @@ def _weighted_pick(options: Sequence[str], rng: random.Random) -> str:
     return rng.choices(list(options), weights=[TILE_WEIGHTS.get(t, 1) for t in options])[0]
 
 
-def _seed_template(domains: List[List[Set[str]]], width: int, height: int,
-                   rng: random.Random) -> None:
-    """Fix a small pattern guaranteeing interesting, connected geometry.
+def _template_is_consistent(stamped: Dict[Tuple[int, int], str],
+                            width: int, height: int) -> bool:
+    """True when every pair of adjacent *stamped* cells is adjacency-legal.
 
-    A horizontal run of floor tiles breaks the all-wall attractor, and an
-    ``S -> C-run -> C-column -> E`` staircase plus floor patches around both
-    terminals seeds a reachable start/end structure directly into the
-    constraint problem. Every stamped pair was checked against
-    :data:`ADJACENCY`, so the template never contradicts itself.
+    Border cells only need checking against stamped interior neighbours:
+    the frame's closed rows permit every interior tile, so a stamped ``B``
+    can never contradict anything.
     """
+    for (x, y), tile in stamped.items():
+        for d, (dx, dy) in enumerate(_DIRS):
+            p = (x + dx, y + dy)
+            other = stamped.get(p)
+            if other is None:
+                continue
+            if p[0] in (0, width - 1) or p[1] in (0, height - 1):
+                continue  # frame always permits interior tiles
+            if other not in ADJACENCY[tile][d]:
+                return False
+    return True
+
+
+def _seed_template(domains: List[List[Set[str]]], width: int, height: int,
+                   rng: random.Random) -> Dict[Tuple[int, int], str]:
+    """Stamp a locally contradiction-free starter pattern (returns the map).
+
+    The template carries the interesting structure — an ``S -> C-run ->
+    C-column -> E`` staircase plus small floor patches so the terminals sit
+    inside real room blobs — and, crucially, a complete all-wall *moat*:
+    every interior cell orthogonally adjacent to a non-border template tile
+    is pre-assigned to ``W`` unless it already holds a template tile.  The
+    stamped set is then validated against :data:`ADJACENCY`; if the random
+    placement produced an illegal stamped pair (e.g. two staircases
+    crossing), the whole template is discarded and a minimal vertical
+    ``S/C/E`` spine against the west inner column is stamped instead —
+    always pair-legal, so no stamped neighbour can ever empty another
+    stamped domain.  Rare *global* contradictions left after the moat
+    (long runs starving their wall flanks) are recovered by the attempt
+    loop in :func:`_collapse`, which stays deterministic per seed.
+    """
+    stamped: Dict[Tuple[int, int], str] = {}
 
     def assign(x: int, y: int, tile: str) -> None:
+        stamped[(x, y)] = tile
         domains[y][x] = {tile}
 
-    fy = rng.randrange(2, max(3, height - 2))
-    fx = rng.randrange(2, max(3, width - 6))
-    for i in range(min(4, width - 3 - fx)):
-        assign(fx + i, fy, F)
+    def build_random() -> None:
+        fy = rng.randrange(2, max(3, height - 4))
+        fx = rng.randrange(2, max(3, width - 8))
+        for i in range(min(4, width - 4 - fx)):
+            assign(fx + i, fy, F)
 
-    sx = rng.randrange(2, max(3, width // 3))
-    sy = rng.randrange(2, max(3, height // 2))
-    ex = rng.randrange(max(sx + 2, 2 * width // 3), width - 3)
-    ey = rng.randrange(max(sy + 1, 2), height - 3)
+        sx = rng.randrange(2, max(3, width // 3))
+        sy = rng.randrange(2, max(3, height // 2))
+        ex = rng.randrange(max(sx + 2, 2 * width // 3), width - 3)
+        ey = rng.randrange(max(sy + 1, 2), height - 3)
 
-    # Staircase skeleton: east-run on the start row, column down at `ex`.
-    assign(sx, sy, S)
-    for rx in range(sx + 1, ex + 1):
-        assign(rx, sy, C)
-    for ry in range(sy + 1, ey):
-        assign(ex, ry, C)
-    assign(ex, ey, E)
+        # Staircase skeleton: east-run on the start row, column down at `ex`.
+        assign(sx, sy, S)
+        for rx in range(sx + 1, ex + 1):
+            assign(rx, sy, C)
+        for ry in range(sy + 1, ey):
+            assign(ex, ry, C)
+        assign(ex, ey, E)
 
-    # Floor patches so the terminals sit inside real room blobs. Only cells
-    # whose stamped neighbourhood stays adjacency-legal are touched, and
-    # never on top of already-fixed template cells.
-    for dx, dy in ((0, 1), (1, 1), (0, 2), (1, 2)):
-        nx_, ny_ = sx + dx, sy + dy
-        if 1 <= nx_ < width - 1 and 1 <= ny_ < height - 1 \
-                and len(domains[ny_][nx_]) > 1:
-            assign(nx_, ny_, F)
-    for dx, dy in ((-1, 0), (-1, -1)):
-        nx_, ny_ = ex + dx, ey + dy
-        if 1 <= nx_ < width - 1 and 1 <= ny_ < height - 1 \
-                and len(domains[ny_][nx_]) > 1:
-            assign(nx_, ny_, F)
+        # Floor patches so the terminals sit inside real room blobs.
+        for dx, dy in ((0, 1), (1, 1), (0, 2), (1, 2)):
+            nx_, ny_ = sx + dx, sy + dy
+            if 1 <= nx_ < width - 1 and 1 <= ny_ < height - 1 \
+                    and (nx_, ny_) not in stamped:
+                assign(nx_, ny_, F)
+        for dx, dy in ((-1, 0), (-1, -1)):
+            nx_, ny_ = ex + dx, ey + dy
+            if 1 <= nx_ < width - 1 and 1 <= ny_ < height - 1 \
+                    and (nx_, ny_) not in stamped:
+                assign(nx_, ny_, F)
+
+    def build_fallback() -> None:
+        stamped.clear()
+        mid = max(2, height // 2)
+        assign(1, mid, S)
+        for y in range(mid + 1, min(mid + 4, height - 2)):
+            assign(1, y, C)
+        assign(1, min(mid + 4, height - 2), E)
+
+    def stamp_moat() -> None:
+        for (x, y), tile in list(stamped.items()):
+            if _is_border(x, y, width, height):
+                continue
+            for dx, dy in _DIRS:
+                nx_, ny_ = x + dx, y + dy
+                if not (1 <= nx_ < width - 1 and 1 <= ny_ < height - 1):
+                    continue  # frame cells keep their pre-assigned B
+                if (nx_, ny_) not in stamped:
+                    assign(nx_, ny_, W)
+
+    build_random()
+    stamp_moat()
+    if not _template_is_consistent(stamped, width, height):
+        build_fallback()
+        stamp_moat()
+    return stamped
 
 
 def _init_domains(width: int, height: int) -> List[List[Set[str]]]:
-    """Fresh domains with the border-frame bug fixed (Phase 10).
-
-    Every grid-border cell is pre-assigned to the dedicated ``B`` tile and
-    interior cells exclude ``B`` from their domains. Without this split the
-    asymmetric wall/floor adjacency rules let propagation push floor tiles
-    onto the edge rows/columns, where the remaining neighbours became
-    contradictory — collapse then failed for essentially every seed.
-    """
-    interior = set(ALL_TILES) - {B}
+    """Fresh domains: ``B``-only frame, ``B``-free interior (Phase 10)."""
     return [
         [
-            {B} if _is_border(x, y, width, height) else set(interior)
+            {B} if _is_border(x, y, width, height) else set(_INTERIOR_ALL)
             for x in range(width)
         ]
         for y in range(height)
@@ -322,7 +393,8 @@ def _maximal_rects(grid: List[List[str]], min_w: int, min_h: int,
     room packing prefers the big open halls produced by the collapse.
     """
     heights = [0] * width
-    found: Dict[Tuple[int, int], RoomRect] = {}
+    found: List[RoomRect] = []
+    seen: Set[RoomRect] = set()
     for y in range(1, height - 1):
         for x in range(1, width - 1):
             heights[x] = heights[x] + 1 if grid[y][x] == FLOOR else 0
@@ -344,11 +416,11 @@ def _maximal_rects(grid: List[List[str]], min_w: int, min_h: int,
                 hh -= 1
             if hh < min_h:
                 continue
-            rx, ry = x - shrunk + 1, y - hh + 1
-            prev = found.get((rx, ry))
-            if prev is None or prev[2] * prev[3] < shrunk * hh:
-                found[(rx, ry)] = (rx, ry, shrunk, hh)
-    return sorted(found.values(), key=lambda r: (-(r[2] * r[3]), r[1], r[0]))
+            rect = (x - shrunk + 1, y - hh + 1, shrunk, hh)
+            if rect not in seen:
+                seen.add(rect)
+                found.append(rect)
+    return sorted(found, key=lambda r: (-(r[2] * r[3]), r[1], r[0]))
 
 
 def _carve(grid: List[List[str]], rect: RoomRect, width: int, height: int) -> None:
@@ -358,42 +430,59 @@ def _carve(grid: List[List[str]], rect: RoomRect, width: int, height: int) -> No
             grid[y][x] = FLOOR
 
 
+def _subdivide(rect: RoomRect, k: int) -> List[RoomRect]:
+    """Split ``rect`` into ``k`` disjoint sub-rectangles (long axis first)."""
+    if k <= 1:
+        return [rect]
+    rx, ry, rw, rh = rect
+    parts: List[RoomRect] = []
+    if rw >= rh:
+        step = rw // k
+        rem = rw - step * k
+        x = rx
+        for i in range(k):
+            w = step + (1 if i < rem else 0)
+            parts.append((x, ry, w, rh))
+            x += w
+    else:
+        step = rh // k
+        rem = rh - step * k
+        y = ry
+        for i in range(k):
+            h = step + (1 if i < rem else 0)
+            parts.append((rx, y, rw, h))
+            y += h
+    return parts
+
+
 def _pack_rooms(grid: List[List[str]], params: Dict[str, Any],
-                width: int, height: int) -> List[RoomRect]:
-    """Stamp non-overlapping rectangular rooms into the floor skeleton."""
+                width: int, height: int) -> Tuple[List[RoomRect], int, int]:
+    """Stamp non-overlapping rectangular rooms into the floor skeleton.
+
+    Candidate rectangles are the maximal all-floor runs of the collapsed
+    skeleton (largest first).  Each candidate is *subdivided* into as many
+    cells as it can hold at ``min_room_size`` (capped by the remaining
+    ``max_rooms`` budget), which turns the few large open halls WFC
+    produces into several distinct rooms; every subdivision stays inside
+    its parent rectangle, so rooms never overlap.  Returns the placed rooms
+    plus the effective ``(min_room_w, min_room_h)`` used, for callers that
+    need to synthesise extra rooms defensively.
+    """
     min_room_w, min_room_h = params.get("min_room_size", (4, 4))
     min_room_w = max(2, min(int(min_room_w), width - 2))
     min_room_h = max(2, min(int(min_room_h), height - 2))
     target = int(params.get("max_rooms", 8))
 
     placed: List[RoomRect] = []
-    occupied: Set[Tuple[int, int]] = set()
 
-    def free(rect: RoomRect) -> bool:
-        rx, ry, rw, rh = rect
-        if rx < 1 or ry < 1 or rx + rw > width - 1 or ry + rh > height - 1:
-            return False
-        for y in range(ry, ry + rh):
-            row = grid[y]
-            for x in range(rx, rx + rw):
-                if row[x] != FLOOR or (x, y) in occupied:
-                    return False
-        return True
-
-    for rect in _maximal_rects(grid, min_room_w, min_room_h, width, height):
-        if len(placed) >= target:
+    for rx, ry, rw, rh in _maximal_rects(grid, min_room_w, min_room_h, width, height):
+        remaining = target - len(placed)
+        if remaining <= 0:
             break
-        rx, ry, rw, rh = rect
-        while rw >= min_room_w and rh >= min_room_h:
-            if free((rx, ry, rw, rh)):
-                placed.append((rx, ry, rw, rh))
-                occupied.update((x, y) for y in range(ry, ry + rh)
-                                for x in range(rx, rx + rw))
-                break
-            if rw >= rh:
-                rw -= 1
-            else:
-                rh -= 1
+        k = min(remaining, max(1, (rw // min_room_w) * (rh // min_room_h)))
+        for part in _subdivide((rx, ry, rw, rh), k):
+            if len(placed) < target:
+                placed.append(part)
 
     if len(placed) < 2:
         # Degenerate skeleton: synthesise two stacked interior rooms.
@@ -403,7 +492,7 @@ def _pack_rooms(grid: List[List[str]], params: Dict[str, Any],
     for rect in placed:  # room interiors become solid floor
         _carve(grid, rect, width, height)
     placed.sort(key=lambda r: (r[1], r[0]))
-    return placed
+    return placed, min_room_w, min_room_h
 
 
 def _connect_chain(grid: List[List[str]], width: int, height: int,
@@ -503,7 +592,17 @@ def generate_wfc(params: Dict[str, Any], *, seed: Optional[int] = None):
          _floor_centre(final_rooms[position[b]]), corridor_width)
         for a, b in links if a in position and b in position
     ]
-    if not corridors:
+    if len(final_rooms) < 2:
+        # Defensive: a degenerate skeleton could collapse S/E into one room;
+        # synthesise a second interior room so start != end always holds.
+        extra = (width // 2 + 1, height // 2 + 1, max(2, min_room_w), max(2, min_room_h))
+        final_rooms.append(extra)
+        _carve(grid, extra, width, height)
+        strings = grid_to_strings(grid)
+        c0 = _floor_centre(final_rooms[0])
+        c1 = _floor_centre(final_rooms[-1])
+        corridors = [(c0, c1, corridor_width)]
+    elif not corridors:
         c = [_floor_centre(r) for r in final_rooms]
         corridors = [(c[i], c[i + 1], corridor_width) for i in range(len(c) - 1)]
 
