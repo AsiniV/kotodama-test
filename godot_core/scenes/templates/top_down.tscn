@@ -1,0 +1,16 @@
+[gd_scene load_steps=2 format=3 uid="uid://kotodama_tpl_top_down"]
+
+[ext_resource type="Script" path="res://scenes/base_template.gd" id="1_base"]
+
+[node name="MainLevel" type="Node2D"]
+script = ExtResource("1_base")
+
+[node name="Modules" type="Node" parent="."]
+
+[node name="World" type="Node2D" parent="."]
+
+[node name="Terrain" type="Node2D" parent="World"]
+
+[node name="Entities" type="Node2D" parent="World"]
+
+[node name="UI" type="CanvasLayer" parent="."]
